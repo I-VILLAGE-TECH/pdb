@@ -11,6 +11,8 @@
     "db:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:import": "tsx src/scripts/import.ts",
+    "db:seed-fs": "tsx src/scripts/seed-fs-fieldmaps.ts",
+    "db:seed-maker-names": "tsx src/scripts/seed-maker-names.ts",
     "db:extract-masters": "tsx src/scripts/extract-masters.ts"
   },
   "prisma": {
