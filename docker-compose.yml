@@ -37,6 +37,42 @@ services:
     # 起動時にマイグレーション適用 → seed → サーバ起動
     command: sh -c "npx prisma migrate deploy && npx tsx prisma/seed.ts && node dist/index.js"
 
+  # 開発用: ソースをマウントして再ビルドなしでコード変更を反映する
+  # 使い方: docker compose --profile dev up app-dev  →  http://localhost:8082
+  #   server は tsx watch、web は Vite(HMR) で即時反映。初回のみ npm ci で数分かかる
+  #   (node_modules はコンテナ専用ボリューム。ホストのmac用バイナリと混ざらないように分離)
+  app-dev:
+    image: node:22-bookworm-slim
+    profiles: ["dev"]
+    working_dir: /repo
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://productdb:productdb-local@db:5432/productdb
+      PORT: 8080
+      UPLOADS_DIR: /uploads
+    ports:
+      - "8082:8081"
+    volumes:
+      - ./:/repo
+      - app-dev-server-modules:/repo/server/node_modules
+      - app-dev-web-modules:/repo/web/node_modules
+      - product-db-uploads:/uploads
+    command: >
+      sh -c "
+      apt-get update -qq && apt-get install -y -qq openssl > /dev/null &&
+      cd /repo/server &&
+      npm ci --no-audit --no-fund &&
+      npx prisma generate &&
+      npx prisma migrate deploy &&
+      (npm run dev &) &&
+      cd /repo/web &&
+      npm ci --no-audit --no-fund &&
+      npm run dev -- --host 0.0.0.0 --port 8081"
+
 volumes:
   product-db-pgdata:
   product-db-uploads:
+  app-dev-server-modules:
+  app-dev-web-modules:

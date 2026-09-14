@@ -80,6 +80,18 @@ docker compose down       # 停止（データは残る）
 docker compose down -v    # 停止＋データも全削除（DBを作り直したいとき）
 ```
 
+### 方法1b: Docker開発モード（再ビルド不要でコード変更を反映）
+
+```bash
+docker compose --profile dev up -d app-dev
+# → http://localhost:8082
+```
+
+- ソースをマウントし、コンテナ内で server=tsx watch / web=Vite(HMR) を実行。**コードを保存すると即反映**（再ビルド不要）
+- 初回のみ依存インストールで数分。node_modules はコンテナ専用ボリュームに分離（ホストと混ざらない）
+- DB・アップロード画像は方法1と同じボリュームを共有。方法1の `app`（:8081、本番同等ビルド）とは併用可
+- 停止: `docker compose --profile dev stop app-dev`
+
 ### 方法2: 開発モード（DBだけDocker、アプリはホットリロード）
 
 ```bash
