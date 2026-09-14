@@ -27,6 +27,13 @@ def s(v):
     return text or None
 
 
+def raw_s(v):
+    if v is None:
+        return None
+    t = str(v)
+    return t if t.strip() else None
+
+
 def num_int(v):
     if v is None or v == "":
         return None
@@ -68,7 +75,7 @@ PL_SHEET = "ペンダントライト一覧"
 PL_IMAGE_COLS = [
     (99, "MAIN", 2),
     (101, "IMAGE", 15),
-    (116, "SIZE", 2),
+    (116, "SIZE", 3),
     (119, "FUNCTION", 6),
 ]
 
@@ -95,12 +102,19 @@ def extract_pl(path):
     makers = {}
     groups = {}  # parentCode -> {"parent": row, "children": [row]}
 
+    # データ行直後のID(メーカー記号+通番)だけ数式で埋まったテンプレート行。
+    # 現行VBAの関連商品(独自コメント(8))の範囲判定に含まれるため直前の商品にそのID値を記録する
+    template_follows = {}
+    last_parent_code = None
     for row in ws.iter_rows(min_row=4, values_only=True):
         row = list(row) + [None] * (170 - len(row))
         sku = s(row[18])  # fazoo管理型番(ユニーク)
         parent_code = s(row[16])  # fazoo管理型番 親
         if not sku or not parent_code:
+            if s(row[7]) and s(row[9]) and last_parent_code and last_parent_code not in template_follows:
+                template_follows[last_parent_code] = (s(row[7]) or "") + (s(row[9]) or "")
             continue
+        last_parent_code = parent_code
         maker_code = s(row[7])
         if maker_code and maker_code not in makers:
             makers[maker_code] = {
@@ -159,11 +173,24 @@ def extract_pl(path):
                     "skuCode": s(r[18]),
                     "axisName": "電球",
                     "optionValue": s(r[154]) or s(r[76]),
-                    "modelNumber": s(r[24]),
+                    "modelNumber": raw_s(r[24]),
                     "janCode": s(r[91]),
                     "price": num_int(r[48]) or num_int(r[29]),
                     "isRepresentative": r is p,
                     "sortNo": num_int(r[19]),
+                    "detail": s(r[93]),  # 行ごとの機能詳細(FS電球タブ本文)
+                    "bulbColor": s(r[76]),  # 行ごとの電球色
+                    "bulbReplacement": s(r[59]),  # 行ごとの電球1(タブ内アイコン用)
+                    "eosFlag": s(r[4]) == "○",  # 行の販売終了(E列)
+                    "bulbKind2": s(r[74]),  # 行の電球種類2
+                    "bulbType": s(r[75]),  # 行の電球の種類
+                    "dimming": s(r[77]),  # 行の調光方法
+                    "relKey": ((s(r[7]) or "") + (s(r[9]) or "")) or None,  # メーカーID+通番
+                    "warrantyFlag": s(r[128]),  # 行のfazoo延長保証
+                    "shape": s(r[89]),  # 行のカテゴリ(形)
+                    "installEdw": s(r[12]),  # 行の取付方法E/D/W
+                    "mainBulbCount": num_int(r[60]),  # 行ごとのメイン電球数
+                    "listed": s(r[0]) == "○",  # 行の登録フラグ
                 }
             )
 
@@ -177,6 +204,7 @@ def extract_pl(path):
 
         products.append(
             {
+                "sheetRow": len(products) + 1,
                 "productCode": parent_code,
                 "category": category,
                 "productKind": "SINGLE" if kind == "単品" and not g["children"] else "VARIATION_PARENT",
@@ -184,13 +212,15 @@ def extract_pl(path):
                 "seriesCode": s(p[10]),
                 "genreCode": s(p[12]),
                 "seqNo": num_int(p[9]),
-                "name": s(p[82]) or s(p[23]) or parent_code,  # 代表イメージ商品名 / 掲載用型番
+                "name": raw_s(p[82]) or s(p[23]) or parent_code,  # 代表イメージ商品名 / 掲載用型番
                 "summary": s(p[22]),  # メイングループ名
-                "modelNumber": s(p[24]),
+                "modelNumber": raw_s(p[24]),
+                "displayModelNumber": raw_s(p[23]),  # 掲載用型番
+                "warranty": s(p[128]),  # 3年保証(○)
                 "janCode": s(p[91]),
                 "status": pl_status(p),
                 "statusNote": s(p[5]),
-                "successorModel": s(p[133]),
+                "successorModel": raw_s(p[133]),
                 "releaseDate": iso_date(p[90]),
                 "cost": num_int(p[26]),
                 "listPriceExTax": num_int(p[27]),
@@ -205,7 +235,7 @@ def extract_pl(path):
                 "totalHeightMinMm": num_int(p[54]),
                 "totalHeightMaxMm": num_int(p[55]),
                 "bodyColor": s(p[80]) or s(p[13]),
-                "comment": s(p[92]),
+                "comment": raw_s(p[92]),
                 "detail": s(p[93]),
                 "descriptions": descriptions or None,
                 "isNew": flag(p[1]),
@@ -218,6 +248,7 @@ def extract_pl(path):
                     "autoKeywords": s(p[129]),
                     "manualKeywords": s(p[130]),
                     "attachableCount": num_int(p[157]),
+                    "plTemplateRelKey": template_follows.get(parent_code),
                 },
                 "lightingAttrs": {
                     "bulbType": s(p[75]),
@@ -240,11 +271,13 @@ def extract_pl(path):
                     "pullSwitch": flag(p[68]),
                     "remoteIncluded": flag(p[69]),
                     "installationCode": s(p[12]),
-                    "installationType": s(p[14]) or s(p[79]),
+                    "installationType": s(p[14]),
+                    "installImage": s(p[79]),
                     "inclinedCeiling": s(p[57]),
                     "highCeiling": flag(p[58]),
                     "cordStorage": s(p[56]),
                     "attachableCount": num_int(p[157]),
+                    "plTemplateRelKey": template_follows.get(parent_code),
                     "tatami": s(p[66]),
                     "roomWholeLighting": flag(p[67]),
                     "material": s(p[81]),
@@ -393,6 +426,7 @@ def extract_cf(path):
 
                 products.append(
                     {
+                        "sheetRow": len(products) + 1,
                         "productCode": code,
                         "category": "CEILING_FAN",
                         "productKind": "SET" if set_components else "SINGLE",
