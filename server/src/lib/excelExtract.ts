@@ -43,6 +43,11 @@ function s(v: Cell): string | null {
   return text || null;
 }
 
+function rawS(v: unknown): string | null {
+  if (v == null) return null;
+  const t = String(v);
+  return t.trim() ? t : null;
+}
 function numInt(v: Cell): number | null {
   if (v == null || v === "") return null;
   const n = Number(v);
@@ -83,7 +88,7 @@ const PL_SHEET = "ペンダントライト一覧";
 const PL_IMAGE_COLS: Array<[number, string, number]> = [
   [99, "MAIN", 2],
   [101, "IMAGE", 15],
-  [116, "SIZE", 2],
+  [116, "SIZE", 3],
   [119, "FUNCTION", 6],
 ];
 
@@ -101,12 +106,22 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
   const makers = new Map<string, MakerJson>();
   const groups = new Map<string, { parent: Row | null; children: Row[] }>();
 
+  // データ行の直後にID(メーカー記号+通番)だけ数式で埋まったテンプレート行が続く箇所がある。
+  // 現行VBAの関連商品(独自コメント(8))はこの行も範囲判定に含むため、直前の商品にそのID値を記録して再現する
+  const templateFollows = new Map<string, string>();
+  let lastParentCode: string | null = null;
   for (let ri = 3; ri < rows.length; ri++) {
     const row: Row = [...(rows[ri] ?? [])];
     row.length = Math.max(row.length, 170);
     const sku = s(row[18]); // fazoo管理型番(ユニーク)
     const parentCode = s(row[16]); // fazoo管理型番 親
-    if (!sku || !parentCode) continue;
+    if (!sku || !parentCode) {
+      if (s(row[7]) && s(row[9]) && lastParentCode && !templateFollows.has(lastParentCode)) {
+        templateFollows.set(lastParentCode, `${s(row[7])}${s(row[9])}`);
+      }
+      continue;
+    }
+    lastParentCode = parentCode;
     const makerCode = s(row[7]);
     if (makerCode && !makers.has(makerCode)) {
       makers.set(makerCode, {
@@ -181,11 +196,24 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         skuCode: s(r[18]),
         axisName: "電球",
         optionValue: s(r[154]) ?? s(r[76]),
-        modelNumber: s(r[24]),
+        modelNumber: rawS(r[24]), // 末尾スペースも現行出力(ページ名等)に効くため生値
         janCode: s(r[91]),
         price: numInt(r[48]) ?? numInt(r[29]),
         isRepresentative: r === p,
         sortNo: numInt(r[19]),
+        detail: s(r[93]), // 行ごとの機能詳細(結合済み)。FS独自コメント(6)の電球タブ本文
+        bulbColor: s(r[76]), // 行ごとの電球色(タブラベル用)
+        bulbReplacement: s(r[59]), // 行ごとの電球1(タブ内アイコン用)
+        eosFlag: s(r[4]) === "○", // 行の販売終了(E列)
+        bulbKind2: s(r[74]), // 行の電球種類2
+        bulbType: s(r[75]), // 行の電球の種類
+        dimming: s(r[77]), // 行の調光方法
+        relKey: `${s(r[7]) ?? ""}${s(r[9]) ?? ""}` || null, // メーカーID+通番(関連範囲判定)
+        warrantyFlag: s(r[128]), // 行のfazoo延長保証
+        shape: s(r[89]), // 行のカテゴリ(形)
+        installEdw: s(r[12]), // 行の取付方法E/D/W
+        mainBulbCount: numInt(r[60]), // 行ごとのメイン電球数(タブ内アイコン用)
+        listed: s(r[0]) === "○", // 行の登録フラグ(FSページ名等の型番連結対象)
       });
     }
 
@@ -198,6 +226,7 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
     }
 
     products.push({
+      sheetRow: products.length + 1,
       productCode: parentCode,
       category,
       productKind: kind === "単品" && g.children.length === 0 ? "SINGLE" : "VARIATION_PARENT",
@@ -205,13 +234,15 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
       seriesCode: s(p[10]),
       genreCode: s(p[12]),
       seqNo: numInt(p[9]),
-      name: s(p[82]) ?? s(p[23]) ?? parentCode,
+      name: rawS(p[82]) ?? s(p[23]) ?? parentCode, // イメージ名は末尾スペースも現行出力に効くため生値
       summary: s(p[22]),
-      modelNumber: s(p[24]),
+      modelNumber: rawS(p[24]), // 掲載用型番との一致判定(商品名)は生値同士で行う
+      displayModelNumber: rawS(p[23]), // 掲載用型番(末尾スペース保持)
+      warranty: s(p[128]), // 3年保証(○)。FSアイコン・レイアウト割当名に使用
       janCode: s(p[91]),
       status: plStatus(p),
       statusNote: s(p[5]),
-      successorModel: s(p[133]),
+      successorModel: rawS(p[133]), // 後継機種リンクのkeywordに生値が入る
       releaseDate: isoDate(p[90]),
       cost: numInt(p[26]),
       listPriceExTax: numInt(p[27]),
@@ -226,7 +257,7 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
       totalHeightMinMm: numInt(p[54]),
       totalHeightMaxMm: numInt(p[55]),
       bodyColor: s(p[80]) ?? s(p[13]),
-      comment: s(p[92]),
+      comment: rawS(p[92]),
       detail: s(p[93]),
       descriptions: descriptions.length > 0 ? descriptions : null,
       isNew: flag(p[1]),
@@ -239,6 +270,7 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         autoKeywords: s(p[129]),
         manualKeywords: s(p[130]),
         attachableCount: numInt(p[157]),
+        plTemplateRelKey: templateFollows.get(parentCode),
       },
       lightingAttrs: {
         bulbType: s(p[75]),
@@ -261,7 +293,8 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         pullSwitch: flag(p[68]),
         remoteIncluded: flag(p[69]),
         installationCode: s(p[12]),
-        installationType: s(p[14]) ?? s(p[79]),
+        installationType: s(p[14]),
+        installImage: s(p[79]), // 取付画像名(FS独自コメント(5)。値があれば固定4種より優先)
         inclinedCeiling: s(p[57]),
         highCeiling: flag(p[58]),
         cordStorage: s(p[56]),
@@ -399,6 +432,7 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
     const amazonPrice = numInt(row[47]);
 
     products.push({
+      sheetRow: products.length + 1,
       productCode: code,
       category: "CEILING_FAN",
       productKind: setComponents.length > 0 ? "SET" : "SINGLE",

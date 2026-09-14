@@ -190,6 +190,8 @@ model Product {
   summary          String? // 商品概要（CF）/ 掲載用メーカ型番→名前（PL）
   modelNumber      String? @map("model_number") // 本体メーカー型番
   combinationModel String? @map("combination_model") // 組み合わせ型番（セット）
+  displayModelNumber String? @map("display_model_number") // 掲載用型番(PL 24列)。製品型番と異なる場合のみFS商品名に表示
+  sheetRow           Int?    @map("sheet_row") // 取込元シートでの行順(FS関連商品の並び順に使用)
   janCode          String? @map("jan_code")
 
   status         ProductStatus @default(ACTIVE)
@@ -298,6 +300,7 @@ model ProductLightingAttrs {
 
   installationCode String? @map("installation_code") // E:簡易/W:電気工事/D:ダクトレール/B:直付・埋込
   installationType String? @map("installation_type") // 取付タイプ名（簡易取付 等）
+  installImage     String? @map("install_image") // 取付画像名(installation_02等。FS独自コメント(5)で固定4種より優先)
   inclinedCeiling  String? @map("inclined_ceiling") // 傾斜対応(n度)
   highCeiling      Boolean @default(false) @map("high_ceiling") // 高所天井向け
   cordStorage      String? @map("cord_storage") // コード収納（収納可能長）
@@ -385,6 +388,19 @@ model ProductVariation {
   sortNo           Int?    @map("sort_no")
   additionalLeadTime String? @map("additional_lead_time") // バリエーション追加納期
   imageName        String? @map("image_name") // バリエーション画像
+  detail           String? // バリエーション個別の機能詳細(結合済みHTML。FS電球タブ本文に使用。E10対応)
+  bulbColor        String? @map("bulb_color") // バリエーション個別の電球色(電球色/温白色等。FS電球タブのラベルに使用)
+  bulbReplacement  String? @map("bulb_replacement") // 行ごとの電球1(同梱/別売等。FSタブ内アイコンに使用)
+  mainBulbCount    Int?    @map("main_bulb_count") // 行ごとのメイン電球数(FSタブ内ソケットアイコンに使用)
+  listed           Boolean @default(true) // 行の登録フラグ(PLのA列○)。FSページ名等の型番連結は○行のみが対象
+  eosFlag          Boolean @default(false) @map("eos_flag") // 行の販売終了(PLのE列○)。FS電球タブ・関連商品の除外に使用
+  bulbKind2        String? @map("bulb_kind2") // 行の電球種類2(LED/白熱球/電球なし。FSタブ見出し・アイコン用)
+  bulbType         String? @map("bulb_type") // 行の電球の種類(非調光/調光・調色等。FSタブ種別・説明文分岐用)
+  dimming          String? // 行の調光方法(Bluetooth/位相制御/PWM/リモコン/単体。FS説明文分岐用)
+  relKey           String? @map("rel_key") // 行のメーカーID+通番連結(FS関連商品の範囲判定用)
+  warrantyFlag     String? @map("warranty_flag") // 行のfazoo延長保証(○。FSタブ内アイコン用)
+  shape            String? // 行のカテゴリ(形)(FSタブ内アイコン用)
+  installEdw       String? @map("install_edw") // 行の取付方法E/D/W(FSタブ内アイコン用)
 
   channelLinks ProductChannelLink[]
 
