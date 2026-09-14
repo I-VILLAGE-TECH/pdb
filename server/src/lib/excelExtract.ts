@@ -493,6 +493,13 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         yahooListPriceUrl: s(row[143]),
         series: s(row[147]),
         singleFlag: s(row[145]),
+        cfVariationModels: [s(row[29]), s(row[30]), s(row[31])], // 型番_バリエーション1〜3の生セル(型番連結用)
+        identNo: numInt(row[9]), // 識別番号(1:予約 2:セール 3:入荷予定)
+        arrivalText: s(row[6]), // 入荷待ち文言(納期バナー用)
+        listPriceRaw: s(row[40]), // 定価セル生値("o"=オープン価格判定用)
+        moneyBack90: s(row[81]), // 90日返金保証("なし"でバナー表示)
+        makerCellName: s(row[16]), // メーカー名セル(EEメーカーの表記用)
+        windVolumeRaw: s(row[58]), // 風量セル生値("large1"=大風量判定用)
       },
       channelPrices: amazonPrice ? [{ channelCode: "amazon", price: amazonPrice }] : [],
       fanAttrs: {
