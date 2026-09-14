@@ -6,6 +6,7 @@ import { z } from "zod";
 import iconv from "iconv-lite";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { cfComment11, cfComment12, cfComment14, cfComment15, cfComment16 } from "../lib/fsCfComments.js";
 import {
   plComment02, plComment03, plComment04, plComment05, plComment06,
   plComment07, plComment08, plComment09, plRelKey, setPlRelated, type PlRelated,
@@ -136,6 +137,9 @@ const FUNCS: Record<
   fs_cool_flag: (p) => (isPL(p) ? "0" : ""),
   // PL版のみ0を出力し、CF版は空の列
   fs_pl_zero: (p) => (isPL(p) ? "0" : ""),
+  // オススメ商品: CF=関連商品列に値があれば表示1+リスト(現行のSetオススメ商品*)。PLは0/空
+  fs_recommend_flag: (p) => (isPL(p) ? "0" : p.relatedProducts ? "1" : ""),
+  fs_recommend_list: (p) => (isPL(p) ? "" : (p.relatedProducts ?? "")),
   // 商品名: CF=「商品名 [型番] メーカー名製シーリングファン[ライト]【商品コード】」
   //         PL=「イメージ名 | 型番 メーカー名製ペンダントライト」(暫定・要比較検証)
   fs_product_name: (p) => {
@@ -253,8 +257,17 @@ const FUNCS: Record<
       }
       return head + base;
     }
-    // CF: 価格統制/海外メーカーは型番を付けない(二重表示回避)。それ以外はTODO(型番連結)
-    return "{% product.name %}｜{% shop.name %}";
+    // CF(VBA準拠): {% product.name %}｜{% shop.name %} + 型番連結(価格統制○とMinkaAire(IM)は付けない)。
+    // 全角スペース→半角、半角2連→1、Shift_JIS 100バイト以上で｜{% shop.name %}→" "、なお超過は個別カット
+    const models = p.priceControlled || p.maker?.makerCode === "IM" ? "" : cfModelConcat(p);
+    let page = `{% product.name %}｜{% shop.name %}${models}`;
+    page = page.replace(/\u3000/g, " ").replace(/  /g, " ");
+    if (sjisLen(page) >= 100) page = page.replace("｜{% shop.name %}", " ");
+    if (sjisLen(page) >= 100) {
+      page = page.replace(" + LLD4000MLCE1 / LLD4000MVCE1 / LLD4000MNCE1", "");
+      page = page.replace(" + LLD3020MLCE1 / LLD3020MVCE1 / LLD3020MNCE1", "");
+    }
+    return page;
   },
   fs_keywords: (p) => {
     if (isPL(p)) return `${p.productCode},${p.maker?.nameJp ?? ""},ペンダントライト`;
@@ -306,6 +319,11 @@ function fsComment(p: ProductFull, n: number): string {
   if (CF_FIXED_COMMENTS.has(n)) {
     return `<!-- ------------独自コメント（${String(n).padStart(2, "0")}）---------- -->`;
   }
+  if (n === 11) return cfComment11(p);
+  if (n === 12) return cfComment12(p, cfModelConcat(p));
+  if (n === 14) return cfComment14(p, cfModelConcat(p));
+  if (n === 15) return cfComment15(p);
+  if (n === 16) return cfComment16(p);
   if (n === 17) {
     return `${fsMakerGroup(p)}製のシーリングファン選びならファズーにおまかせください【品揃え日本一】`;
   }
@@ -313,6 +331,45 @@ function fsComment(p: ProductFull, n: number): string {
 }
 for (let n = 1; n <= 20; n++) {
   FUNCS[`fs_comment_${n}`] = (p) => fsComment(p, n);
+}
+
+// CFの型番連結(現行のSet型番連結 iClass=1)。列順: 組み合わせ/一体型→ファン→ライト→パイプ→
+// フランジ→リモコン→羽根→オプション→バリエーション1〜3。バリエーション型番は初出時に
+// 「v1 / v2 + 」(3個時は「v1 / v2 / v3 + 」)の形でまとめて連結される
+function cfModelConcat(p: ProductFull): string {
+  let out = "";
+  if (p.combinationModel) out = `${p.combinationModel}/`;
+  const extra = (p.extra ?? {}) as Record<string, unknown>;
+  const vFromExtra = Array.isArray(extra.cfVariationModels)
+    ? (extra.cfVariationModels as (string | null)[])
+    : null;
+  // 取込済みextraがあればシートのバリエーション型番セルそのまま。無ければ複数バリエーション時のみ代用
+  const vModels = vFromExtra
+    ? [vFromExtra[0] ?? "", vFromExtra[1] ?? "", vFromExtra[2] ?? ""]
+    : p.variations.length > 1
+      ? [1, 2, 3].map((n) => p.variations.find((v) => v.variationNo === n)?.modelNumber ?? "")
+      : ["", "", ""];
+  const ROLE_ORDER = ["FAN", "LIGHT", "PIPE", "FLANGE", "REMOTE", "BLADE", "OPTION"];
+  const cols = [
+    p.modelNumber ?? "",
+    ...ROLE_ORDER.map((role) => p.setComponents.find((c) => c.role === role)?.componentModel ?? ""),
+    ...vModels,
+  ];
+  let variationDone = false;
+  for (const m of cols) {
+    if (!m) continue;
+    if (m === vModels[0] || m === vModels[1] || m === vModels[2]) {
+      if (!variationDone) {
+        out += `${vModels[0]} / `;
+        if (vModels[2]) out += `${vModels[1]} / ${vModels[2]} + `;
+        else out += `${vModels[1]} + `;
+        variationDone = true;
+      }
+    } else {
+      out += `${m} + `;
+    }
+  }
+  return out ? out.slice(0, -3) : "";
 }
 
 // PL系の種別語尾(製ペンダントライト/製シーリングライト等)

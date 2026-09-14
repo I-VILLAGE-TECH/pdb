@@ -25,9 +25,9 @@ export const FS_CCGOODS_COLUMNS: Array<[string, string]> = [
   ["送料パターン表示", "const:0"],
   ["送料個別金額", "const:"],
   ["個別送料表示", "func:fs_pl_zero"], // PL=0 / CF=空
-  ["オススメ商品商品ページ内表示", "func:fs_pl_zero"],
-  ["オススメ商品リスト", "const:"],
-  ["オススメ商品表示方法", "func:fs_pl_zero"],
+  ["オススメ商品商品ページ内表示", "func:fs_recommend_flag"], // PL=0 / CF=関連商品あり→1
+  ["オススメ商品リスト", "func:fs_recommend_list"], // CF=関連商品(コード列挙)
+  ["オススメ商品表示方法", "func:fs_recommend_flag"],
   ["商品価格上部コメントHTMLタグ", "func:fs_pl_zero"],
   ["商品価格上部コメント", "const:"],
   ["定価価格前文字", "const:定価"],
