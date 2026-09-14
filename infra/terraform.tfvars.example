@@ -1,0 +1,5 @@
+project_id     = "your-gcp-project-id"
+invoker_member = "user:you@example.com"
+# region       = "asia-northeast1"
+# service_name = "product-db"
+# db_tier      = "db-f1-micro"

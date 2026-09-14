@@ -1,0 +1,766 @@
+// 商品管理システム 基幹DB スキーマ
+// 設計書: documents/03_設計/01_全体/03_DB設計.md (D1-3) +
+//         documents/03_設計/01_全体/04_連携同期_共通設計.md (D1-4) §8 反映済み
+// 現行2ブック（ペンダントライト一覧.xlsm / シーリングファン一覧.xlsb）の列を突合して設計
+
+generator client {
+  provider = "prisma-client-js"
+  // native: ホスト開発用 / debian-openssl-3.0.x: Cloud Run(x64) / linux-arm64: ローカルDocker(Apple Silicon)
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// users / sessions（認証・ユーザー管理）
+// ============================================================
+
+enum UserRole {
+  ADMIN // ユーザー管理・連携先設定を含む全操作
+  EDITOR // 商品・在庫・価格の編集と反映操作
+
+  @@map("user_role")
+}
+
+model User {
+  id           Int      @id @default(autoincrement())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  role         UserRole @default(EDITOR)
+  active       Boolean  @default(true) // 無効化でログイン不可（削除はしない）
+  lastLoginAt  DateTime? @map("last_login_at")
+
+  sessions Session[]
+  settings UserSetting[] @relation("settings")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id // ランダムトークン（cookie: sid）
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+// ユーザーごとの画面設定（一覧の表示項目カスタマイズ等）
+model UserSetting {
+  userId Int    @map("user_id")
+  user   User   @relation("settings", fields: [userId], references: [id], onDelete: Cascade)
+  key    String // 例: productListColumns:PENDANT_LIGHT
+  value  Json
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@id([userId, key])
+  @@map("user_settings")
+}
+
+// ============================================================
+// master_items（汎用コードマスタ）
+// 商品の自由入力になっていた項目のうち、語彙が有限のものをマスタ管理する。
+// type: supplier(仕入先) / installation_type(取付タイプ) / bulb_base(口金) /
+//       bulb_color(電球色) / light_color(光色) / body_color(本体カラー) /
+//       material(素材) / warranty(保証期間) / motor_type(AC・DC)
+// value は商品データに保存される値そのもの（マスタ変更で既存商品は書き換えない）
+// ============================================================
+
+model MasterItem {
+  id     Int     @id @default(autoincrement())
+  type   String
+  value  String
+  sortNo Int     @default(999) @map("sort_no")
+  active Boolean @default(true)
+  note   String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([type, value])
+  @@index([type, active])
+  @@map("master_items")
+}
+
+// Excel取込の実行履歴（進捗はメモリ、確定情報はここに永続化）
+model ImportJob {
+  id          String    @id
+  fileName    String    @map("file_name")
+  bookType    String?   @map("book_type") // PL / CF
+  mode        String // diff / replace
+  status      String // PARSING / RUNNING / DONE / ERROR
+  total       Int       @default(0)
+  processed   Int       @default(0)
+  created     Int       @default(0)
+  updated     Int       @default(0)
+  softDeleted Int       @default(0) @map("soft_deleted")
+  errors      Json      @default("[]")
+  triggeredBy String    @map("triggered_by")
+  startedAt   DateTime  @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+
+  @@index([startedAt])
+  @@map("import_jobs")
+}
+
+// ============================================================
+// 3.1 makers（メーカーマスタ）
+// ============================================================
+
+model Maker {
+  id        Int     @id @default(autoincrement())
+  makerCode String  @unique @map("maker_code") // AW/OD/PN…（CFは1文字コードもあり）
+  nameJp    String  @map("name_jp") // メーカー名(カナ/和名)
+  nameEn    String? @map("name_en") // メーカー名(英字)
+  imgFolder String? @map("img_folder") // 画像保存フォルダ名
+  sortLevel Int     @default(999) @map("sort_level") // 並び順レベル
+  aliases   Json?   // 別名マッピング（hanwa→LifeOnProducts等）
+
+  products Product[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("makers")
+}
+
+// ============================================================
+// 3.2 products（商品マスタ＝親/代表商品）
+// ============================================================
+
+enum ProductCategory {
+  PENDANT_LIGHT // PL
+  CEILING_LIGHT // CL
+  CEILING_FAN // CF
+  OTHER
+
+  @@map("product_category")
+}
+
+enum ProductKind {
+  SINGLE // 単品
+  VARIATION_PARENT // 親バリエーション
+  SET // セット
+  COMPONENT // 構成部材
+
+  @@map("product_kind")
+}
+
+enum ProductStatus {
+  ACTIVE // 販売中
+  HIDDEN // 非公開
+  DISCONTINUED // 生産終了
+  DISCONTINUED_IN_STOCK // 生産終了・在庫あり（PL: △終了在庫有）
+  BACKORDER // 入荷待ち
+  RESERVE // 予約
+
+  @@map("product_status")
+}
+
+enum TaxType {
+  TAX_INCLUDED // 税込
+  TAX_EXCLUDED // 税抜
+
+  @@map("tax_type")
+}
+
+model Product {
+  id          Int             @id @default(autoincrement())
+  productCode String          @unique @map("product_code") // Fazoo型番 / ID商品管理（IAE001, OD-0010E-CL）
+  category    ProductCategory
+  productKind ProductKind     @default(SINGLE) @map("product_kind")
+
+  makerId    Int?    @map("maker_id")
+  maker      Maker?  @relation(fields: [makerId], references: [id])
+  seriesCode String? @map("series_code") // IDシリーズ / シリーズ
+  genreCode  String? @map("genre_code") // IDジャンル / 取付方法(E/W/D/B)
+  seqNo      Int?    @map("seq_no") // ID通番 / 通番
+
+  name             String // 商品名
+  summary          String? // 商品概要（CF）/ 掲載用メーカ型番→名前（PL）
+  modelNumber      String? @map("model_number") // 本体メーカー型番
+  combinationModel String? @map("combination_model") // 組み合わせ型番（セット）
+  janCode          String? @map("jan_code")
+
+  status         ProductStatus @default(ACTIVE)
+  statusNote     String?       @map("status_note") // 入荷待ち文言 等
+  successorModel String?       @map("successor_model") // 後継機種 / 代替え後継品型番
+  releaseDate    DateTime?     @map("release_date") // 発売日
+
+  // 価格（税抜を基準列に、税込は明示列の二本立て。§9-1）
+  cost             Int?     @map("cost") // 仕入値(税抜)
+  costInTax        Int?     @map("cost_in_tax") // 仕入値(税込)
+  listPriceExTax   Int?     @map("list_price_extax") // 定価(税抜)
+  listPriceInTax   Int?     @map("list_price_intax") // 定価(税込)
+  isOpenPrice      Boolean  @default(false) @map("is_open_price") // 定価"O"=オープン価格
+  sellingPriceExTax Int?    @map("selling_price_extax") // 販売価格(税抜)
+  sellingPrice     Int?     @map("selling_price") // 販売価格(税込)
+  totalPrice       Int?     @map("total_price") // 合計販売価格(税込・組み合わせ含む)
+  priceControlled  Boolean  @default(false) @map("price_controlled") // 価格統制フラグ
+  taxType          TaxType  @default(TAX_INCLUDED) @map("tax_type") // FS税設定
+  pointRate        Decimal? @map("point_rate") @db.Decimal(5, 2) // Yahooポイント
+  supplier         String? // 仕入先
+  shippingEstimate Int?     @map("shipping_estimate") // 送料目安
+
+  // 寸法/共通
+  widthMm          Int?     @map("width_mm")
+  depthMm          Int?     @map("depth_mm")
+  heightMm         Int?     @map("height_mm") // 照明高さ / 高さ1
+  height2Mm        Int?     @map("height2_mm") // 高さ2（CF）
+  totalHeightMinMm Int?     @map("total_height_min_mm") // 全高(最低)
+  totalHeightMaxMm Int?     @map("total_height_max_mm") // 全高(最高)
+  weightKg         Decimal? @map("weight_kg") @db.Decimal(8, 2)
+  warranty         String? // 保証期間
+  moneyBackDays    Int?     @map("money_back_days") // 90日返金
+  countryOfOrigin  String?  @map("country_of_origin") // 生産国
+  goodDesignYear   Int?     @map("good_design_year") // GoodDesign受賞年
+  bodyColor        String?  @map("body_color") // 本体カラー / メーカーカラー
+
+  // 文章
+  comment      String? @db.Text // 商品コメント / メイン紹介文
+  detail       String? @db.Text // 機能詳細 / サブ紹介文
+  descriptions Json? // 機能詳細1〜5・サブ紹介文_個別 等の区分付き文章 [{label, body}]
+  videoHtmls   Json? // FS用/YA用/RA用 動画HTML {fs, yahoo, rakuten}
+
+  // 運用フラグ
+  isNew            Boolean @default(false) @map("is_new") // 新着（即日発送）
+  isRecommended    Boolean @default(false) @map("is_recommended") // おすすめ
+  isSameDayShipping Boolean @default(false) @map("is_same_day_shipping") // 即日発送
+  flags            Json? // 各種フラグ（未分類の運用フラグ）
+  sortNo           Int?    @map("sort_no") // 並び順番号
+  shippingLeadTime String? @map("shipping_lead_time") // 通常出荷納期
+  fsShippingPattern String? @map("fs_shipping_pattern") // FS送料パターン
+  relatedProducts  String? @map("related_products") // 関連商品
+  exampleUrl       String? @map("example_url") // 事例写真リンクURL
+  memo             String? @db.Text // 作業メモ欄 / 備考 / 手書き欄
+  extra            Json? // 移行時に未マッピングの列を退避
+
+  lightingAttrs ProductLightingAttrs?
+  fanAttrs      ProductFanAttrs?
+  variations    ProductVariation[]
+  images        ProductImage[]
+  setComponents SetComponent[]        @relation("SetParent")
+  usedInSets    SetComponent[]        @relation("Component")
+  categories    ProductCategoryLink[]
+  channelPrices ProductChannelPrice[]
+  channelLinks  ProductChannelLink[]
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at") // 差分連携の起点
+  deletedAt DateTime? @map("deleted_at") // 論理削除
+
+  @@index([category, status])
+  @@index([makerId])
+  @@index([updatedAt])
+  @@map("products")
+}
+
+// ============================================================
+// 3.3 product_lighting_attrs（照明系拡張・1:1）
+// ============================================================
+
+model ProductLightingAttrs {
+  id        Int     @id @default(autoincrement())
+  productId Int     @unique @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  bulbType        String? @map("bulb_type") // 電球タブ: 非調光/調光/調光・調色/フルカラー…
+  bulbKind        String? @map("bulb_kind") // 電球種類: LED/白熱球
+  initialBulbType String? @map("initial_bulb_type") // 初期電球種類（LED電球クリアミニクリプトン形 等）
+  bulbColor       String? @map("bulb_color") // 電球色/昼白色…
+  bulbBase        String? @map("bulb_base") // 口金 E17/E26
+  mainBulbCount   Int?    @map("main_bulb_count") // メイン電球数
+  subBulb         String? @map("sub_bulb") // サブ電球（ナツメ球等）
+  bulbReplacement String? @map("bulb_replacement") // 電球交換: 同梱電球/一体型/同梱電球無し
+  bundledBulbModel String? @map("bundled_bulb_model") // 組み合わせ電球型番
+
+  brightnessLm    String? @map("brightness_lm") // 明るさlm（調光対応時は範囲）
+  colorTempLow    Int?    @map("color_temp_low") // 色温度1(K)
+  colorTempHigh   Int?    @map("color_temp_high") // 色温度2(K)
+  raValue         Int?    @map("ra_value") // Ra
+  wattEquivalent  String? @map("watt_equivalent") // W相当（25/40/60/100）
+  wattEquivalentTable String? @map("watt_equivalent_table") // テーブルサイズ別W相当
+
+  dimmingMethod  String?  @map("dimming_method") // 調光方法（位相制御/PWM/Bluetooth/リモコン…）
+  stepSwitching  Boolean  @default(false) @map("step_switching") // 段階切替
+  pullSwitch     Boolean  @default(false) @map("pull_switch") // プルスイッチ式
+  remoteIncluded Boolean  @default(false) @map("remote_included") // リモコン付属
+
+  installationCode String? @map("installation_code") // E:簡易/W:電気工事/D:ダクトレール/B:直付・埋込
+  installationType String? @map("installation_type") // 取付タイプ名（簡易取付 等）
+  inclinedCeiling  String? @map("inclined_ceiling") // 傾斜対応(n度)
+  highCeiling      Boolean @default(false) @map("high_ceiling") // 高所天井向け
+  cordStorage      String? @map("cord_storage") // コード収納（収納可能長）
+  attachableCount  Int?    @map("attachable_count") // 取付可能数
+
+  tatami            String? // 畳数（～4.5畳/～6畳…）
+  roomWholeLighting Boolean @default(false) @map("room_whole_lighting") // 部屋全体照明
+
+  material String? // 素材
+  tags     Json? // カテゴリ（スタイル/カラー/タイプ/素材/形）等の分類タグ
+
+  @@map("product_lighting_attrs")
+}
+
+// ============================================================
+// 3.4 product_fan_attrs（ファン系拡張・1:1）
+// ============================================================
+
+model ProductFanAttrs {
+  id        Int     @id @default(autoincrement())
+  productId Int     @unique @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  motorType         String?  @map("motor_type") // AC/DC
+  bladeCount        Int?     @map("blade_count") // ファン枚数
+  windSpeed         Decimal? @map("wind_speed") @db.Decimal(6, 2) // 風速(m/sec)
+  windVolume        Decimal? @map("wind_volume") @db.Decimal(8, 2) // 風量(m3/min)
+  rotationSpeed     Int?     @map("rotation_speed") // 回転数(r/min)
+  windLevels        Int?     @map("wind_levels") // 風量レベル
+  powerConsumptionW Decimal? @map("power_consumption_w") @db.Decimal(6, 1) // 電気使用量W(モーター)
+
+  extensionPipe   String? @map("extension_pipe") // 延長パイプ
+  pipeVariation   String? @map("pipe_variation") // パイプvari
+  mountType       String? @map("mount_type") // 直付/パイプ
+  heightToBladeMm Int?    @map("height_to_blade_mm") // 羽根までの高さ
+
+  lightCount Int?    @map("light_count") // 照明の数
+  lightKind  String? @map("light_kind") // 照明の種類（LED等）
+  lightColor String? @map("light_color") // 光色
+
+  bladeColor1 String? @map("blade_color1") // 羽の色①
+  bladeColor2 String? @map("blade_color2") // 羽の色②
+  colorCategory String? @map("color_category") // カラー種別
+
+  rhythmMode     Boolean @default(false) @map("rhythm_mode") // リズム回転
+  dimming        String? // 調光_有無NG
+  remoteIncluded Boolean @default(false) @map("remote_included") // リモコン有無
+  batteryType    String? @map("battery_type") // 電池の有無（AAA等）
+  batteryCount   Int?    @map("battery_count") // 付属電池の数
+
+  brightnessLm   Int?    @map("brightness_lm") // 照度ルーメン
+  wattEquivalent String? @map("watt_equivalent") // 明るさnW相当
+  tatamiFrom     Int?    @map("tatami_from") // 照度n畳から
+  tatamiTo       Int?    @map("tatami_to") // 照度n畳まで
+  angledCeiling  String? @map("angled_ceiling") // 斜め取り付け可否
+  fanGrade       String? @map("fan_grade") // スタンダード等の商品グレード
+  installVideoType String? @map("install_video_type") // 取り付け動画種別
+  installNotes   Json? // 取付方法フラグ群（ローゼット簡易/一部電気工事/ボルト止め/その他/備考）
+
+  @@map("product_fan_attrs")
+}
+
+// ============================================================
+// 3.5 product_variations（SKU＝バリエーション）
+// 単品も variation_no=1 の1行を持つ（連携処理を親子で統一）
+// ============================================================
+
+model ProductVariation {
+  id        Int     @id @default(autoincrement())
+  productId Int     @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  variationNo Int    @map("variation_no") // 枝番（1,2,3…／V01形式は出力時に整形）
+  skuCode     String @unique @map("sku_code") // product_code + "v" + no
+
+  axisName    String? @map("axis_name") // 軸名（電球/照明の色合）
+  optionValue String? @map("option_value") // 選択肢（電球色/昼白色…）
+  modelNumber String? @map("model_number") // このSKUの型番
+  janCode     String? @map("jan_code")
+
+  stockQty Int  @default(0) @map("stock_qty") // 在庫数（実数）
+  price    Int? // このSKUの価格（絶対値）
+
+  isRepresentative Boolean @default(false) @map("is_representative")
+  sortNo           Int?    @map("sort_no")
+  additionalLeadTime String? @map("additional_lead_time") // バリエーション追加納期
+  imageName        String? @map("image_name") // バリエーション画像
+
+  channelLinks ProductChannelLink[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([productId, variationNo])
+  @@map("product_variations")
+}
+
+// ============================================================
+// 3.6 product_images（画像・縦持ちで枚数制限撤廃）
+// ============================================================
+
+enum ImageType {
+  MAIN // M01/M02
+  IMAGE // I01〜I15
+  SIZE // S01/S02
+  FUNCTION // F01〜F06
+  REMOTE // R01
+  ACCESSORY // E01
+  LIST // L01〜L04（商品一覧/サブ）
+  BANNER // バナー
+  AD // AD1/AD2（広告・Amazonメイン）
+  ORIGINAL // 隠し元画像
+  FEATURE // 商品特徴紹介
+
+  @@map("image_type")
+}
+
+model ProductImage {
+  id        Int     @id @default(autoincrement())
+  productId Int     @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  imageType ImageType @map("image_type")
+  sortNo    Int       @default(1) @map("sort_no") // 種別内の順序（M01/I01…の番号）
+  fileName  String    @map("file_name") // 元ファイル名
+  url       String? // 公開URL
+  altText   String?   @map("alt_text")
+  linkUrl   String?   @map("link_url") // バナーリンク
+  title     String? // バナータイトル
+
+  @@index([productId, imageType])
+  @@map("product_images")
+}
+
+// ============================================================
+// 4.1 set_components（セット構成明細・CF固有だがPLでも利用可）
+// ============================================================
+
+enum ComponentRole {
+  BODY // 一体型
+  FAN // ファン
+  LIGHT // ライト
+  PIPE // 延長パイプ
+  FLANGE // フランジ・フレンジ
+  REMOTE // オプションリモコン
+  BLADE // オプション羽根
+  OPTION // オプション
+  BULB // 電球（PLの組み合わせ電球）
+  PRODUCT // 組み合わせ製品（PL）
+
+  @@map("component_role")
+}
+
+model SetComponent {
+  id                 Int      @id @default(autoincrement())
+  setProductId       Int      @map("set_product_id")
+  setProduct         Product  @relation("SetParent", fields: [setProductId], references: [id], onDelete: Cascade)
+  componentProductId Int?     @map("component_product_id") // 引当済みの場合
+  componentProduct   Product? @relation("Component", fields: [componentProductId], references: [id])
+
+  componentModel String        @map("component_model") // 構成部材型番（引当前の生値）
+  role           ComponentRole
+  qty            Int           @default(1)
+  sortNo         Int?          @map("sort_no")
+
+  @@index([setProductId])
+  @@map("set_components")
+}
+
+// ============================================================
+// 4.2 categories / product_categories（内部カテゴリ・階層）
+// ============================================================
+
+model Category {
+  id       Int        @id @default(autoincrement())
+  path     String     @unique // スラッシュ階層（style/シンプル 等）
+  name     String
+  parentId Int?       @map("parent_id")
+  parent   Category?  @relation("Tree", fields: [parentId], references: [id])
+  children Category[] @relation("Tree")
+
+  products     ProductCategoryLink[]
+  channelMaps  ChannelCategoryMap[]
+
+  @@map("categories")
+}
+
+model ProductCategoryLink {
+  productId  Int      @map("product_id")
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  categoryId Int      @map("category_id")
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([productId, categoryId])
+  @@map("product_categories")
+}
+
+// ============================================================
+// 5.1 channels（連携先マスタ）＋ 共通設計§3-3の追加列
+// ============================================================
+
+enum TransferType {
+  CSV
+  API
+  FTP
+
+  @@map("transfer_type")
+}
+
+enum Charset {
+  SHIFT_JIS
+  UTF8
+
+  @@map("charset")
+}
+
+enum StockSyncMode {
+  QUANTITY // 数量
+  AVAILABILITY // あり・なしのみ
+  NONE
+
+  @@map("stock_sync_mode")
+}
+
+enum UpsertMode {
+  EXPLICIT_NUD // n/u/d明示
+  PARTIAL_UPDATE
+  FULL_REPLACE
+
+  @@map("upsert_mode")
+}
+
+enum ReflectMode {
+  MANUAL
+  AUTO // 在庫など例外的に許容する場合のみ
+
+  @@map("reflect_mode")
+}
+
+enum VerifySource {
+  API_FETCH // 連携先APIで再取得
+  FEED_REPORT // 処理レポート
+  MAIL // 完了メール
+  NONE // 手動確認
+
+  @@map("verify_source")
+}
+
+model Channel {
+  id            Int           @id @default(autoincrement())
+  code          String        @unique // futureshop / yahoo / rakuten / amazon / nextengine …
+  name          String
+  transferType  TransferType  @map("transfer_type")
+  charset       Charset       @default(UTF8)
+  stockSyncMode StockSyncMode @default(NONE) @map("stock_sync_mode")
+  priceSource   String        @default("total_price") @map("price_source") // 採用する価格列
+  upsertMode    UpsertMode    @default(FULL_REPLACE) @map("upsert_mode")
+  splitRows     Int?          @map("split_rows") // CSV分割件数（futureshop商品700 等）
+  active        Boolean       @default(true)
+
+  // 共通設計 §3-3 追加列
+  reflectMode         ReflectMode  @default(MANUAL) @map("reflect_mode")
+  verifySource        VerifySource @default(NONE) @map("verify_source")
+  remoteFetchSchedule String?      @map("remote_fetch_schedule") // 連携先現在値の定期取得（cron）
+  secretsRef          String?      @map("secrets_ref") // Secret Manager の参照キー
+
+  fieldMaps     ChannelFieldMap[]
+  categoryMaps  ChannelCategoryMap[]
+  productPrices ProductChannelPrice[]
+  productLinks  ProductChannelLink[]
+  syncJobs      SyncJob[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("channels")
+}
+
+// 5.2 channel_field_maps（列マッピング定義）
+model ChannelFieldMap {
+  id        Int     @id @default(autoincrement())
+  channelId Int     @map("channel_id")
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  outputColNo  Int     @map("output_col_no") // 出力CSVの列番号
+  outputHeader String  @map("output_header") // 列名
+  sourceExpr   String  @map("source_expr") // マスタ属性名 or const:"u" or func:fs_product_name
+  required     Boolean @default(false)
+
+  @@unique([channelId, outputColNo])
+  @@map("channel_field_maps")
+}
+
+// channel_category_maps（内部カテゴリ→連携先カテゴリ）
+model ChannelCategoryMap {
+  id           Int      @id @default(autoincrement())
+  channelId    Int      @map("channel_id")
+  channel      Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  categoryId   Int      @map("category_id")
+  category     Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  externalCode String   @map("external_code") // FSグループURLコード/YahooカテゴリID/楽天ディレクトリ/ブラウズノード
+  isMain       Boolean  @default(false) @map("is_main")
+  displayOrder Int?     @map("display_order")
+
+  @@unique([channelId, categoryId])
+  @@map("channel_category_maps")
+}
+
+// 5.3 product_channel_prices（販路別価格）
+model ProductChannelPrice {
+  productId Int     @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  channelId Int     @map("channel_id")
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  price     Int // 例: Amazon=販売価格2、DeNA=販売価格3
+
+  @@id([productId, channelId])
+  @@map("product_channel_prices")
+}
+
+// ============================================================
+// 6 product_channel_links（SKU×連携先の同期状態・3層スナップショット）
+// 共通設計 §3-1: variation_id 必須・SKU単位
+// ============================================================
+
+enum LinkStatus {
+  UNREGISTERED
+  REGISTERED
+  DISCONTINUED
+  DELETED
+
+  @@map("link_status")
+}
+
+enum DiffStatus {
+  NONE // ✅ 同期済み
+  UNREGISTERED // 🆕 未登録
+  LOCAL_CHANGED // ✏️ 未反映
+  REMOTE_DRIFT // ⚠️ 連携先が変更
+  BOTH // ⚠️ 両方変更
+
+  @@map("diff_status")
+}
+
+enum SyncStatus {
+  IDLE
+  PENDING
+  VERIFIED
+  ERROR
+
+  @@map("sync_status")
+}
+
+model ProductChannelLink {
+  id          Int              @id @default(autoincrement())
+  channelId   Int              @map("channel_id")
+  channel     Channel          @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  productId   Int              @map("product_id")
+  product     Product          @relation(fields: [productId], references: [id], onDelete: Cascade)
+  variationId Int              @map("variation_id")
+  variation   ProductVariation @relation(fields: [variationId], references: [id], onDelete: Cascade)
+
+  externalCode String?    @map("external_code") // FS商品URLコード/楽天商品管理番号/ASIN…
+  linkStatus   LinkStatus @default(UNREGISTERED) @map("link_status")
+
+  // 3層スナップショット
+  localPayload    Json?     @map("local_payload") // 基幹DBからこの連携先向けに変換した今の値
+  localHash       String?   @map("local_hash") @db.Char(64)
+  sentPayload     Json?     @map("sent_payload") // 最後に送った値
+  sentHash        String?   @map("sent_hash") @db.Char(64)
+  remotePayload   Json?     @map("remote_payload") // 連携先の現在値
+  remoteFetchedAt DateTime? @map("remote_fetched_at")
+
+  diffStatus DiffStatus @default(UNREGISTERED) @map("diff_status")
+  diffFields Json?      @map("diff_fields") // 差分項目ごとの DB値/送信値/連携先値
+  syncStatus SyncStatus @default(IDLE) @map("sync_status")
+
+  lastSentAt     DateTime? @map("last_sent_at")
+  lastVerifiedAt DateTime? @map("last_verified_at")
+  lastError      String?   @map("last_error")
+
+  jobItems SyncJobItem[]
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([channelId, variationId])
+  @@index([channelId, diffStatus])
+  @@map("product_channel_links")
+}
+
+// ============================================================
+// sync_jobs / sync_job_items（反映履歴）共通設計 §3-2
+// ============================================================
+
+enum SyncJobType {
+  PRODUCT
+  PRICE
+  STOCK
+  IMAGE
+  DELETE
+
+  @@map("sync_job_type")
+}
+
+enum SyncJobStatus {
+  CREATED
+  SENT
+  PROCESSED_OK
+  PROCESSED_NG
+  PROCESSED_UNKNOWN
+  VERIFIED
+  VERIFY_FAILED
+
+  @@map("sync_job_status")
+}
+
+model SyncJob {
+  id          Int           @id @default(autoincrement())
+  channelId   Int           @map("channel_id")
+  channel     Channel       @relation(fields: [channelId], references: [id])
+  jobType     SyncJobType   @map("job_type")
+  triggeredBy String?       @map("triggered_by") // 実行者
+  transportRef String?      @map("transport_ref") // 送信ファイル名/Feed ID/APIリクエストID
+  rowCount    Int           @default(0) @map("row_count")
+  status      SyncJobStatus @default(CREATED)
+  startedAt   DateTime      @default(now()) @map("started_at")
+  finishedAt  DateTime?     @map("finished_at")
+  note        String?
+
+  items SyncJobItem[]
+
+  @@index([channelId, status])
+  @@map("sync_jobs")
+}
+
+enum NudControl {
+  N // 新規
+  U // 更新
+  D // 削除
+
+  @@map("nud_control")
+}
+
+enum SyncItemResult {
+  OK
+  ERROR
+  UNKNOWN
+
+  @@map("sync_item_result")
+}
+
+model SyncJobItem {
+  id     Int     @id @default(autoincrement())
+  jobId  Int     @map("job_id")
+  job    SyncJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  linkId Int     @map("link_id")
+  link   ProductChannelLink @relation(fields: [linkId], references: [id])
+
+  control      NudControl
+  payloadHash  String?        @map("payload_hash") @db.Char(64)
+  result       SyncItemResult @default(UNKNOWN)
+  errorMessage String?        @map("error_message")
+
+  @@index([jobId])
+  @@map("sync_job_items")
+}

@@ -1,0 +1,8 @@
+**/node_modules
+**/dist
+web/dist
+server/dist
+tools/import/out
+infra
+.git
+*.md
