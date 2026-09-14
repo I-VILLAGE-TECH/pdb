@@ -729,15 +729,40 @@ const FS_SET_TYPES: Record<string, { members: FsSubFileType[]; zipName: string }
   },
 };
 
+// サブCSVの分割件数(現行VBAのSPLIT_DATA_GOODSVARIATION等=999。商品CSVはchannels.split_rows=700)
+const FS_SUB_SPLIT_ROWS = 999;
+
+function buildCsvText(header: string[], rows: string[][]): string {
+  return (
+    [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join("\r\n") +
+    "\r\n"
+  );
+}
+function encodeCsv(sjis: boolean, text: string): Buffer {
+  return sjis ? iconv.encode(text, "Shift_JIS") : Buffer.from("\uFEFF" + text, "utf8");
+}
+// 分割: limit超過時のみ分割し、各ファイルにヘッダー行を付ける(現行のSaveCopySheetFutureShopCSVと同じ)
+function splitRowChunks(rows: string[][], limit: number | null | undefined): string[][][] {
+  if (!limit || rows.length <= limit) return [rows];
+  const chunks: string[][][] = [];
+  for (let i = 0; i < rows.length; i += limit) chunks.push(rows.slice(i, i + limit));
+  return chunks;
+}
+// 分割時はファイル名に _1.._N を付ける(単一なら無印)
+function chunkFileNames(base: string, count: number): string[] {
+  if (count <= 1) return [`${base}.csv`];
+  return Array.from({ length: count }, (_, i) => `${base}_${i + 1}.csv`);
+}
+
 async function runExportJob(job: ExportJob, f: Filter) {
   try {
+    const stamp = new Date()
+      .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
+      .replace(/[-: ]/g, "")
+      .slice(0, 12);
     const set = f.fileType ? FS_SET_TYPES[f.fileType] : undefined;
     if (set) {
-      // セット出力: メンバーごとにCSVを生成してZIPにまとめる(現行のExcelボタン1回分)
-      const stamp = new Date()
-        .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
-        .replace(/[-: ]/g, "")
-        .slice(0, 12);
+      // セット出力: メンバーごとにCSVを生成し(999行分割込み)ZIPにまとめる(現行のExcelボタン1回分)
       const zip = new JSZip();
       for (let mi = 0; mi < set.members.length; mi++) {
         const member = set.members[mi];
@@ -750,16 +775,11 @@ async function runExportJob(job: ExportJob, f: Filter) {
             job.total = total;
           }
         );
-        const text =
-          [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join(
-            "\r\n"
-          ) + "\r\n";
-        zip.file(
-          `${label}_${stamp}.csv`,
-          channel.charset === "SHIFT_JIS"
-            ? iconv.encode(text, "Shift_JIS")
-            : Buffer.from("\uFEFF" + text, "utf8")
-        );
+        const chunks = splitRowChunks(rows, FS_SUB_SPLIT_ROWS);
+        const names = chunkFileNames(`${label}_${stamp}`, chunks.length);
+        chunks.forEach((chunk, i) => {
+          zip.file(names[i], encodeCsv(channel.charset === "SHIFT_JIS", buildCsvText(header, chunk)));
+        });
         await new Promise((r) => setImmediate(r));
       }
       job.phase = "ファイル作成中";
@@ -777,24 +797,29 @@ async function runExportJob(job: ExportJob, f: Filter) {
     });
     job.phase = "ファイル作成中";
     await new Promise((r) => setImmediate(r));
-    const text =
-      [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join(
-        "\r\n"
-      ) + "\r\n";
-    const stamp = new Date()
-      .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
-      .replace(/[-: ]/g, "")
-      .slice(0, 12);
     const isSub = f.fileType && f.fileType !== "products";
-    job.filename = isSub
-      ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}.csv`
-      : `${channel.code}_products_${stamp}.csv`;
-    if (channel.charset === "SHIFT_JIS") {
-      job.contentType = "text/csv; charset=Shift_JIS";
-      job.body = iconv.encode(text, "Shift_JIS");
+    const base = isSub
+      ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}`
+      : `${channel.code}_products_${stamp}`;
+    // 分割件数: 商品CSV=channels.split_rows(futureshop 700) / サブCSV=999
+    const limit = isSub ? FS_SUB_SPLIT_ROWS : channel.splitRows;
+    const chunks = splitRowChunks(rows, limit);
+    const sjis = channel.charset === "SHIFT_JIS";
+    if (chunks.length === 1) {
+      job.contentType = sjis ? "text/csv; charset=Shift_JIS" : "text/csv; charset=utf-8";
+      job.body = encodeCsv(sjis, buildCsvText(header, chunks[0]));
+      job.filename = `${base}.csv`;
     } else {
-      job.contentType = "text/csv; charset=utf-8";
-      job.body = Buffer.from("\uFEFF" + text, "utf8");
+      // 分割時は _1.._N のCSVをZIPで(各ファイルにヘッダー行あり)
+      const zip = new JSZip();
+      const names = chunkFileNames(base, chunks.length);
+      for (let i = 0; i < chunks.length; i++) {
+        zip.file(names[i], encodeCsv(sjis, buildCsvText(header, chunks[i])));
+        await new Promise((r) => setImmediate(r));
+      }
+      job.body = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+      job.contentType = "application/zip";
+      job.filename = `${base}.zip`;
     }
     job.status = "DONE";
     job.phase = "完了";
