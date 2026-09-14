@@ -3,10 +3,19 @@
 // 複雑変換は func: キーで本ファイルの関数へ委譲（DB設計 §5.2 / 連携同期共通設計 buildPayload に相当）
 import { Router } from "express";
 import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import iconv from "iconv-lite";
+import JSZip from "jszip";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { cfComment11, cfComment12, cfComment14, cfComment15, cfComment16 } from "../lib/fsCfComments.js";
+import {
+  FS_SUB_FILE_TYPES,
+  FS_SUB_FILE_NAMES,
+  fsSubCsvHeader,
+  generateFsSubCsv,
+  type FsSubFileType,
+} from "../lib/fsSubCsv.js";
 import {
   plComment02, plComment03, plComment04, plComment05, plComment06,
   plComment07, plComment08, plComment09, plRelKey, setPlRelated, type PlRelated,
@@ -36,6 +45,11 @@ const filterQuery = z.object({
   updatedTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   // マーク付きのみ出力（クライアントのローカルストレージから商品コードを受け取る）
   productCodes: z.array(z.string().min(1)).max(20000).optional(),
+  // ファイル種別: products(商品CSV・既定) / futureshopのサブCSV各種 /
+  // Excelボタン相当のセット(option_set=オプション2種, variation_set_new/update=バリエーション4種をZIPで)
+  fileType: z
+    .enum(["products", ...FS_SUB_FILE_TYPES, "option_set", "variation_set_new", "variation_set_update"])
+    .optional(),
 });
 
 type Filter = z.infer<typeof filterQuery>;
@@ -459,11 +473,40 @@ function csvField(s: string): string {
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-async function generateRows(f: Filter) {
+type ExportProgress = (phase: string, processed: number, total: number) => void;
+
+async function generateRows(f: Filter, onProgress?: ExportProgress) {
+  onProgress?.("商品データ読み込み中", 0, 0);
   const channel = await prisma.channel.findUniqueOrThrow({
     where: { id: f.channelId },
     include: { fieldMaps: { orderBy: { outputColNo: "asc" } } },
   });
+  // futureshopサブCSV(PLのオプション/バリエーション各種)。行はシート順(sheetRow)
+  if (f.fileType && f.fileType !== "products") {
+    if (channel.code !== "futureshop") {
+      throw Object.assign(new Error("このファイル種別はfutureshopのみ対応です"), { status: 400 });
+    }
+    const fileType = f.fileType as FsSubFileType;
+    const subProducts = (await prisma.product.findMany({
+      where: buildWhere(f),
+      include: {
+        maker: true,
+        lightingAttrs: true,
+        fanAttrs: true,
+        variations: { orderBy: { variationNo: "asc" } },
+        images: true,
+        channelPrices: true,
+        setComponents: true,
+      },
+      orderBy: [{ sheetRow: "asc" }, { id: "asc" }],
+    })) as ProductFull[];
+    const pls = subProducts.filter((p) => isPL(p) && p.sheetRow != null);
+    onProgress?.("生成中", 0, pls.length);
+    const header = fsSubCsvHeader(fileType);
+    const rows = generateFsSubCsv(fileType, pls, (p) => String(FUNCS.fs_product_name(p, p.variations[0]!, channel) ?? ""));
+    onProgress?.("生成中", pls.length, pls.length);
+    return { channel, header, rows, fileType };
+  }
   if (channel.fieldMaps.length === 0) {
     throw Object.assign(new Error("この連携先の列定義（channel_field_maps）が未登録です"), {
       status: 400,
@@ -560,6 +603,8 @@ async function generateRows(f: Filter) {
   // futureshopの商品CSVは現行仕様どおり商品単位1行(バリエーションは別CSV群で表現)。他連携先はSKU単位
   const perProduct = channel.code === "futureshop";
   const rows: string[][] = [];
+  let done = 0;
+  onProgress?.("生成中", 0, products.length);
   for (const p of products) {
     const targets = perProduct
       ? [p.variations.find((v) => v.isRepresentative) ?? p.variations[0]]
@@ -568,7 +613,14 @@ async function generateRows(f: Filter) {
       if (!v) continue;
       rows.push(channel.fieldMaps.map((m) => resolveExpr(m.sourceExpr, p, v, channel)));
     }
+    done++;
+    if (done % 100 === 0) {
+      onProgress?.("生成中", done, products.length);
+      // 進捗ポーリングに応答できるようイベントループへ譲る
+      await new Promise((r) => setImmediate(r));
+    }
   }
+  onProgress?.("生成中", products.length, products.length);
   return { channel, header, rows };
 }
 
@@ -613,15 +665,21 @@ async function handleCsv(req: Request, res: Response, next: NextFunction) {
       .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
       .replace(/[-: ]/g, "")
       .slice(0, 12);
-    const filename = `${channel.code}_products_${stamp}.csv`;
+    // 日本語ファイル名はHTTPヘッダに直接入れられないためRFC5987(filename*)で渡す
+    const isSub = f.fileType && f.fileType !== "products";
+    const filename = isSub
+      ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}.csv`
+      : `${channel.code}_products_${stamp}.csv`;
+    const asciiName = isSub ? `fs_${f.fileType}_${stamp}.csv` : filename;
+    const dispo = `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
 
     if (channel.charset === "SHIFT_JIS") {
       res.setHeader("Content-Type", "text/csv; charset=Shift_JIS");
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Disposition", dispo);
       res.send(iconv.encode(text, "Shift_JIS"));
     } else {
       res.setHeader("Content-Type", "text/csv; charset=utf-8");
-      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Disposition", dispo);
       res.send("\uFEFF" + text);
     }
   } catch (e) {
@@ -630,3 +688,166 @@ async function handleCsv(req: Request, res: Response, next: NextFunction) {
 }
 exportsRouter.get("/csv", handleCsv);
 exportsRouter.post("/csv", handleCsv);
+
+// ============ 進捗付きエクスポートジョブ ============
+// 全件出力は生成に時間がかかるため、ジョブ開始→進捗ポーリング→完成ファイル取得の3段構成
+type ExportJob = {
+  id: string;
+  status: "RUNNING" | "DONE" | "ERROR";
+  phase: string;
+  processed: number;
+  total: number;
+  filename?: string;
+  contentType?: string;
+  body?: Buffer;
+  error?: string;
+  startedAt: number;
+};
+const exportJobs = new Map<string, ExportJob>();
+// 完了後30分で破棄(ダウンロードし忘れ対策で即時削除はしない)
+const EXPORT_JOB_TTL_MS = 30 * 60 * 1000;
+function sweepExportJobs() {
+  const now = Date.now();
+  for (const [id, j] of exportJobs) {
+    if (now - j.startedAt > EXPORT_JOB_TTL_MS) exportJobs.delete(id);
+  }
+}
+
+// Excelボタン相当のセット出力(1ボタン=複数CSVをZIPで)
+const FS_SET_TYPES: Record<string, { members: FsSubFileType[]; zipName: string }> = {
+  option_set: {
+    members: ["option_basic", "option_select"],
+    zipName: "PL_FSオプション",
+  },
+  variation_set_new: {
+    members: ["variation_choice_new", "variation_detail", "variation_stock", "variation_price"],
+    zipName: "PL_FSバリエーション_new",
+  },
+  variation_set_update: {
+    members: ["variation_choice_update", "variation_detail", "variation_stock", "variation_price"],
+    zipName: "PL_FSバリエーション_update",
+  },
+};
+
+async function runExportJob(job: ExportJob, f: Filter) {
+  try {
+    const set = f.fileType ? FS_SET_TYPES[f.fileType] : undefined;
+    if (set) {
+      // セット出力: メンバーごとにCSVを生成してZIPにまとめる(現行のExcelボタン1回分)
+      const stamp = new Date()
+        .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
+        .replace(/[-: ]/g, "")
+        .slice(0, 12);
+      const zip = new JSZip();
+      for (let mi = 0; mi < set.members.length; mi++) {
+        const member = set.members[mi];
+        const label = FS_SUB_FILE_NAMES[member];
+        const { channel, header, rows } = await generateRows(
+          { ...f, fileType: member },
+          (phase, processed, total) => {
+            job.phase = `${label} (${mi + 1}/${set.members.length}) ${phase}`;
+            job.processed = processed;
+            job.total = total;
+          }
+        );
+        const text =
+          [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join(
+            "\r\n"
+          ) + "\r\n";
+        zip.file(
+          `${label}_${stamp}.csv`,
+          channel.charset === "SHIFT_JIS"
+            ? iconv.encode(text, "Shift_JIS")
+            : Buffer.from("\uFEFF" + text, "utf8")
+        );
+        await new Promise((r) => setImmediate(r));
+      }
+      job.phase = "ファイル作成中";
+      job.body = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+      job.contentType = "application/zip";
+      job.filename = `${set.zipName}_${stamp}.zip`;
+      job.status = "DONE";
+      job.phase = "完了";
+      return;
+    }
+    const { channel, header, rows } = await generateRows(f, (phase, processed, total) => {
+      job.phase = phase;
+      job.processed = processed;
+      job.total = total;
+    });
+    job.phase = "ファイル作成中";
+    await new Promise((r) => setImmediate(r));
+    const text =
+      [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join(
+        "\r\n"
+      ) + "\r\n";
+    const stamp = new Date()
+      .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
+      .replace(/[-: ]/g, "")
+      .slice(0, 12);
+    const isSub = f.fileType && f.fileType !== "products";
+    job.filename = isSub
+      ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}.csv`
+      : `${channel.code}_products_${stamp}.csv`;
+    if (channel.charset === "SHIFT_JIS") {
+      job.contentType = "text/csv; charset=Shift_JIS";
+      job.body = iconv.encode(text, "Shift_JIS");
+    } else {
+      job.contentType = "text/csv; charset=utf-8";
+      job.body = Buffer.from("\uFEFF" + text, "utf8");
+    }
+    job.status = "DONE";
+    job.phase = "完了";
+  } catch (e) {
+    job.status = "ERROR";
+    job.error = e instanceof Error ? e.message : String(e);
+  }
+}
+
+exportsRouter.post("/jobs", (req, res, next) => {
+  try {
+    sweepExportJobs();
+    const f = parseFilter(req);
+    const job: ExportJob = {
+      id: randomUUID(),
+      status: "RUNNING",
+      phase: "準備中",
+      processed: 0,
+      total: 0,
+      startedAt: Date.now(),
+    };
+    exportJobs.set(job.id, job);
+    void runExportJob(job, f);
+    res.json({ jobId: job.id });
+  } catch (e) {
+    next(e);
+  }
+});
+
+exportsRouter.get("/jobs/:id", (req, res) => {
+  const job = exportJobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: "ジョブが見つかりません" });
+  res.json({
+    status: job.status,
+    phase: job.phase,
+    processed: job.processed,
+    total: job.total,
+    filename: job.filename,
+    error: job.error,
+  });
+});
+
+exportsRouter.get("/jobs/:id/download", (req, res) => {
+  const job = exportJobs.get(req.params.id);
+  if (!job || job.status !== "DONE" || !job.body) {
+    return res.status(404).json({ error: "ダウンロード可能なファイルがありません" });
+  }
+  const ext = (job.filename ?? "").endsWith(".zip") ? "zip" : "csv";
+  const ascii = /^[\x20-\x7e]+$/.test(job.filename ?? "") ? job.filename : `export.${ext}`;
+  res.setHeader("Content-Type", job.contentType ?? "text/csv");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(job.filename ?? "export.csv")}`
+  );
+  res.send(job.body);
+});
