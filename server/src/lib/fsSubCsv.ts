@@ -1,7 +1,8 @@
-// futureshop サブCSV(PL: オプション基本/選択肢・バリエーション選択肢登録/詳細/在庫/価格)の生成
-// 現行VBA(pendantlight/modules/futureshopOption.bas / futureshopVariation.bas)の出力を再現する。
+// futureshop サブCSV(PL: オプション基本/選択肢・バリエーション選択肢登録/詳細/在庫/価格・グループひもづけ)の生成
+// 現行VBA(pendantlight/modules/futureshopOption.bas / futureshopVariation.bas / futureshopCategory.bas)の出力を再現する。
 // - オプション2種: 複数行(親+子)の商品のみ対象。親は0円、子は親との税込価格差
 // - バリエーション4種: ○行(listed)ごとに1行。選択肢文言は「n. 電球種類2+電球の種類[／電球色]」
+// - グループひもづけ: 1商品(○行あり)につきカテゴリ数分の行。スタイル/素材/形/取付/テーブルサイズから生成
 import type { Prisma } from "@prisma/client";
 
 type ProductFull = Prisma.ProductGetPayload<{
@@ -25,6 +26,7 @@ export const FS_SUB_FILE_TYPES = [
   "variation_detail",
   "variation_stock",
   "variation_price",
+  "category",
 ] as const;
 export type FsSubFileType = (typeof FS_SUB_FILE_TYPES)[number];
 
@@ -37,6 +39,19 @@ export const FS_SUB_FILE_NAMES: Record<FsSubFileType, string> = {
   variation_detail: "PL_FSバリエーション詳細登録",
   variation_stock: "PL_FSバリエーション在庫",
   variation_price: "PL_FSバリエーション価格",
+  category: "PL_FSグループひもづけ",
+};
+
+// 分割件数(現行VBAのSPLIT_DATA_*)。超過時は _1.._N に分割し各ファイルにヘッダー行を付ける
+export const FS_SUB_SPLIT_ROWS: Record<FsSubFileType, number> = {
+  option_basic: 999,
+  option_select: 999,
+  variation_choice_new: 999,
+  variation_choice_update: 999,
+  variation_detail: 999,
+  variation_stock: 999,
+  variation_price: 999,
+  category: 5000, // SPLIT_DATA_CATEGORY
 };
 
 const HEADERS: Record<FsSubFileType, string[]> = {
@@ -77,7 +92,93 @@ const HEADERS: Record<FsSubFileType, string[]> = {
     "バリエーション別選択肢（縦軸）", "バリエーション別枝番（縦軸）", "バリエーション販売価格",
     "商品番号", "商品管理番号", "商品名", "JANコード", "最終更新日付",
   ],
+  // 現行のFS_categoryシート(6列)。値が入るのはコントロールカラム/商品URLコード/表示先グループのみ
+  category: ["コントロールカラム", "商品URLコード", "商品名", "表示先グループ", "登録日時", "最終更新日時"],
 };
+
+// ---------- グループひもづけ(カテゴリ) ----------
+
+// 現行のCategoryName(): シート上の短縮語→FSの正式グループ名
+const CATEGORY_NAME: Record<string, string> = {
+  アンティーク: "アンティーク・レトロ",
+  ガラス: "ガラス・ステンドグラス シェード",
+  金属: "金属・真鍮・ホーロー シェード",
+  木製: "木製・木目調 シェード",
+  陶器: "陶器・磁器 シェード",
+  布: "布・ナイロン シェード",
+  紙: "紙・和紙 シェード",
+  アクリル: "アクリル・樹脂 シェード",
+  その他素材: "その他素材 シェード",
+  丸: "丸・球",
+  三角: "三角形",
+};
+function categoryName(s: string): string {
+  return CATEGORY_NAME[s] ?? s;
+}
+
+const ITEM_TYPE_CATEGORY: Record<string, string> = {
+  PENDANT_LIGHT: "ペンダントライト",
+  CEILING_LIGHT: "シーリングライト",
+  CEILING_FAN: "シーリングファン",
+};
+
+function plTag(p: ProductFull, key: string): string {
+  const tags = p.lightingAttrs?.tags as Record<string, unknown> | null | undefined;
+  const v = tags?.[key];
+  return v == null ? "" : String(v);
+}
+
+// 現行のSetCategoryMngFS(SET_CATEGORY)。ペンダントライト一覧シートの商品を対象に、階層は「/」区切り
+export function plFsCategories(p: ProductFull): string[] {
+  const a = p.lightingAttrs;
+  const cats: string[] = [];
+  // 取付タイプ: ダクトレール(D)はスタイル/素材カテゴリに接頭辞
+  const inst = (a?.installationCode ?? p.genreCode) === "D" ? "ダクトレール取付タイプ/" : "";
+  // PL / CL / CF
+  const typeCat = ITEM_TYPE_CATEGORY[p.category];
+  if (typeCat) cats.push(typeCat);
+  // スタイル
+  for (const key of ["style1", "style2"]) {
+    const v = plTag(p, key);
+    if (v) cats.push(inst + categoryName(v));
+  }
+  // 素材(タイプ素材1/2)。2種が異なれば異素材ミックス
+  const m1 = plTag(p, "material1");
+  const m2 = plTag(p, "material2");
+  if (m1) cats.push(inst + categoryName(m1));
+  if (m2) cats.push(inst + categoryName(m2));
+  if (m1 && m2 && m1 !== m2) cats.push(inst + "異素材ミックス シェード");
+  // かたち(接頭辞なし)
+  const shape = plTag(p, "shape");
+  if (shape) cats.push(categoryName(shape));
+  // タイプ別
+  if (a?.highCeiling) cats.push("吹き抜け・高所天井用");
+  if (a?.inclinedCeiling) cats.push("傾斜天井用");
+  // テーブルサイズ別(W相当)。4人掛けは複数所属あり(40Wは2灯/3灯の両方)、6人掛けは1つ
+  const tableRaw = a?.wattEquivalentTable ?? "";
+  if (tableRaw !== "") {
+    const w = Number(tableRaw);
+    if (!Number.isFinite(w) || w < 1 || w > 100) {
+      throw Object.assign(
+        new Error(`${p.productCode}: テーブルサイズ別用(W相当)の値が正しくありません: ${tableRaw}`),
+        { status: 400 }
+      );
+    }
+    if (w >= 80 && w <= 100) cats.push("4人掛けテーブル用/1灯80W-100Wタイプ");
+    if (w >= 40 && w <= 79) cats.push("4人掛けテーブル用/2灯40W-60Wタイプ");
+    if (w >= 1 && w <= 40) cats.push("4人掛けテーブル用/3灯40Wタイプ");
+    if (w >= 80 && w <= 100) cats.push("6人掛けテーブル用/2灯80W-100Wタイプ");
+    else if (w >= 41 && w <= 79) cats.push("6人掛けテーブル用/3灯60Wタイプ");
+    else if (w >= 1 && w <= 40) cats.push("6人掛けテーブル用/4灯40Wタイプ");
+    else {
+      throw Object.assign(
+        new Error(`${p.productCode}: テーブルサイズ別用(W相当)の値が正しくありません: ${tableRaw}`),
+        { status: 400 }
+      );
+    }
+  }
+  return cats;
+}
 
 export function fsSubCsvHeader(fileType: FsSubFileType): string[] {
   return HEADERS[fileType];
@@ -209,6 +310,17 @@ export function generateFsSubCsv(
         for (const v of vars) {
           rows.push([p.productCode, "", "", "", vNo(v), String(v.price ?? ""), "", "", "", "", ""]);
         }
+        break;
+      }
+      case "category": {
+        // 親行が生産終了なら全グループをd(削除)し、最後に「生産終了品」をnで追加。通常はn固定
+        // ※現行は「生産終了品」行のコントロールカラムが全角「ｎ」(既知バグ)。半角nで出力する
+        const eos = rep?.eosFlag ?? false;
+        const control = eos ? "d" : "n";
+        for (const cat of plFsCategories(p)) {
+          rows.push([control, p.productCode, "", cat, "", ""]);
+        }
+        if (eos) rows.push(["n", p.productCode, "", "生産終了品", "", ""]);
         break;
       }
     }

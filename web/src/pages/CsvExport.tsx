@@ -175,9 +175,11 @@ export function CsvExport() {
     { key: "option_set", label: "オプション(PL・基本+選択肢の2ファイル)" },
     { key: "variation_set_new", label: "バリエーション NewItem(PL・4ファイル)" },
     { key: "variation_set_update", label: "バリエーション Update(PL・4ファイル)" },
+    { key: "category", label: "グループひもづけ(PL・カテゴリCSV)" },
   ] as const;
   const isFutureshop = selectedChannel?.code === "futureshop";
-  const isSetType = fileType !== "products";
+  // ZIPでまとめるセット出力はプレビュー対象外(単一CSVのサブ種別はプレビュー可)
+  const isSetType = ["option_set", "variation_set_new", "variation_set_update"].includes(fileType);
 
   return (
     <div>

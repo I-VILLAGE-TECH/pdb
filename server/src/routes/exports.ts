@@ -12,6 +12,7 @@ import { cfComment11, cfComment12, cfComment14, cfComment15, cfComment16 } from 
 import {
   FS_SUB_FILE_TYPES,
   FS_SUB_FILE_NAMES,
+  FS_SUB_SPLIT_ROWS,
   fsSubCsvHeader,
   generateFsSubCsv,
   type FsSubFileType,
@@ -481,7 +482,7 @@ async function generateRows(f: Filter, onProgress?: ExportProgress) {
     where: { id: f.channelId },
     include: { fieldMaps: { orderBy: { outputColNo: "asc" } } },
   });
-  // futureshopサブCSV(PLのオプション/バリエーション各種)。行はシート順(sheetRow)
+  // futureshopサブCSV(PLのオプション/バリエーション各種/グループひもづけ)。行はシート順(sheetRow)
   if (f.fileType && f.fileType !== "products") {
     if (channel.code !== "futureshop") {
       throw Object.assign(new Error("このファイル種別はfutureshopのみ対応です"), { status: 400 });
@@ -641,7 +642,11 @@ async function handlePreview(req: Request, res: Response, next: NextFunction) {
       header,
       rows: rows.slice(0, 5),
       total: rows.length,
-      splitRows: channel.splitRows,
+      // 分割目安: サブCSVは種別ごとの件数(999/カテゴリ5000)、商品CSVはchannels.split_rows
+      splitRows:
+        f.fileType && f.fileType !== "products"
+          ? (FS_SUB_SPLIT_ROWS[f.fileType as FsSubFileType] ?? channel.splitRows)
+          : channel.splitRows,
     });
   } catch (e) {
     next(e);
@@ -729,8 +734,7 @@ const FS_SET_TYPES: Record<string, { members: FsSubFileType[]; zipName: string }
   },
 };
 
-// サブCSVの分割件数(現行VBAのSPLIT_DATA_GOODSVARIATION等=999。商品CSVはchannels.split_rows=700)
-const FS_SUB_SPLIT_ROWS = 999;
+// サブCSVの分割件数は種別ごとにFS_SUB_SPLIT_ROWS(999/カテゴリ5000)。商品CSVはchannels.split_rows=700
 
 function buildCsvText(header: string[], rows: string[][]): string {
   return (
@@ -775,7 +779,7 @@ async function runExportJob(job: ExportJob, f: Filter) {
             job.total = total;
           }
         );
-        const chunks = splitRowChunks(rows, FS_SUB_SPLIT_ROWS);
+        const chunks = splitRowChunks(rows, FS_SUB_SPLIT_ROWS[member]);
         const names = chunkFileNames(`${label}_${stamp}`, chunks.length);
         chunks.forEach((chunk, i) => {
           zip.file(names[i], encodeCsv(channel.charset === "SHIFT_JIS", buildCsvText(header, chunk)));
@@ -801,8 +805,8 @@ async function runExportJob(job: ExportJob, f: Filter) {
     const base = isSub
       ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}`
       : `${channel.code}_products_${stamp}`;
-    // 分割件数: 商品CSV=channels.split_rows(futureshop 700) / サブCSV=999
-    const limit = isSub ? FS_SUB_SPLIT_ROWS : channel.splitRows;
+    // 分割件数: 商品CSV=channels.split_rows(futureshop 700) / サブCSV=種別ごと(999、カテゴリ5000)
+    const limit = isSub ? FS_SUB_SPLIT_ROWS[f.fileType as FsSubFileType] : channel.splitRows;
     const chunks = splitRowChunks(rows, limit);
     const sjis = channel.charset === "SHIFT_JIS";
     if (chunks.length === 1) {
