@@ -170,13 +170,25 @@ export function CsvExport() {
   ] as const;
 
   // futureshopのファイル種別(現行Excelのボタンと同じ粒度。セットはZIPでまとめて出力)
-  const FS_FILE_TYPES = [
+  // PLブック(ペンダントライト一覧)とCFブック(シーリングファン一覧)でボタン構成が異なる
+  const FS_FILE_TYPES_PL = [
     { key: "products", label: "商品CSV(FS_ccGoods)" },
     { key: "option_set", label: "オプション(PL・基本+選択肢の2ファイル)" },
     { key: "variation_set_new", label: "バリエーション NewItem(PL・4ファイル)" },
     { key: "variation_set_update", label: "バリエーション Update(PL・4ファイル)" },
     { key: "category", label: "グループひもづけ(PL・カテゴリCSV)" },
-  ] as const;
+  ];
+  const FS_FILE_TYPES_CF = [
+    { key: "products", label: "商品CSV(FS_ccGoods)" },
+    { key: "comment16", label: "独自コメント16のみ更新(CF・商品CSV形式)" },
+    { key: "category", label: "グループひもづけ(CF・カテゴリCSV)" },
+    { key: "option_set", label: "オプション(CF・取付工事 基本+選択肢の2ファイル)" },
+    { key: "tag", label: "商品タグ(CF)" },
+    { key: "variation_set_new", label: "バリエーション NewItem(CF・3ファイル)" },
+    { key: "variation_set_update", label: "バリエーション Update(CF・3ファイル)" },
+    { key: "image_alt", label: "商品画像ALT(CF)" },
+  ];
+  const FS_FILE_TYPES = categoryTab === "CEILING_FAN" ? FS_FILE_TYPES_CF : FS_FILE_TYPES_PL;
   const isFutureshop = selectedChannel?.code === "futureshop";
   // ZIPでまとめるセット出力はプレビュー対象外(単一CSVのサブ種別はプレビュー可)
   const isSetType = ["option_set", "variation_set_new", "variation_set_update"].includes(fileType);
@@ -195,6 +207,9 @@ export function CsvExport() {
             onClick={() => {
               setCategoryTab(t.key);
               setPreview(null);
+              // タブ側に無い種別(CF専用のタグ等)が選ばれていたら商品CSVに戻す
+              const types = t.key === "CEILING_FAN" ? FS_FILE_TYPES_CF : FS_FILE_TYPES_PL;
+              if (!types.some((x) => x.key === fileType)) setFileType("products");
             }}
           >
             {t.label}

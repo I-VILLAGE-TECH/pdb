@@ -132,6 +132,12 @@ function plTag(p: ProductFull, key: string): string {
 export function plFsCategories(p: ProductFull): string[] {
   const a = p.lightingAttrs;
   const cats: string[] = [];
+  // その他別管理一覧FS: 「オプション/」+ その他管理用カテゴリ1 のみ
+  const x = (p.extra ?? {}) as Record<string, unknown>;
+  if (x.sheet === "other") {
+    if (typeof x.opCategory === "string" && x.opCategory) cats.push(`オプション/${x.opCategory}`);
+    return cats;
+  }
   // 取付タイプ: ダクトレール(D)はスタイル/素材カテゴリに接頭辞
   const inst = (a?.installationCode ?? p.genreCode) === "D" ? "ダクトレール取付タイプ/" : "";
   // PL / CL / CF
@@ -221,11 +227,11 @@ function repVar(p: ProductFull): Variation | undefined {
   return p.variations.find((v) => v.isRepresentative) ?? p.variations[0];
 }
 
-// productName: FS商品名(exports.tsのfs_product_name)を注入(循環import回避)
+// productName: 行単位のFS商品名(exports.tsのfsRowProductName)を注入(循環import回避)
 export function generateFsSubCsv(
   fileType: FsSubFileType,
   products: ProductFull[],
-  productName: (p: ProductFull) => string
+  productName: (p: ProductFull, v: Variation) => string
 ): string[][] {
   const rows: string[][] = [];
   for (const p of products) {
@@ -293,15 +299,15 @@ export function generateFsSubCsv(
             p.productCode, "", "", choiceLabel(i + 1, v), vNo(v),
             v.isRepresentative ? "1" : "", "", "",
             p.productCode, `${p.productCode}${vNo(v)}`,
-            `${productName(p)} ${choiceLabel(i + 1, v)}`, "", "",
+            `${productName(p, v)} ${choiceLabel(i + 1, v)}`, "", "",
           ]);
         });
         break;
       }
       case "variation_stock": {
         for (const v of vars) {
-          // 行が生産終了 or 商品が入荷待ちなら在庫0
-          const stock = v.eosFlag || p.status === "BACKORDER" ? "0" : "999";
+          // 行が生産終了 or 行が入荷待ちなら在庫0
+          const stock = v.eosFlag || v.backorder ? "0" : "999";
           rows.push([p.productCode, "", "", "", vNo(v), "", stock, "", "", "", "", ""]);
         }
         break;
