@@ -208,6 +208,5 @@ Cloud Run は既定で IAM 認証（`invoker_member`）。全公開する場合�
 - `channel_field_maps` の本仕様化。現在は各モールたたき台の列定義（6〜12列）をseed済みで、
   CSV出力画面から利用可。個別設計（D2-x）確定時に本仕様（FS111列等）へ差し替える。
   `source_expr` の `func:` 変換関数は `server/src/routes/exports.ts` に追加していく
-- CSV分割出力（futureshopの700行分割。現在は分割目安の警告表示のみ）
 - remote層（連携先現在値）の取得と drift 判定
 - 反映操作の通知（Slack/メール）
