@@ -7,3 +7,4 @@ tools/import/out/
 infra/.terraform/
 infra/*.tfstate*
 infra/terraform.tfvars
+tmp/
