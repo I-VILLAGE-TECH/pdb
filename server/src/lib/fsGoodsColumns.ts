@@ -33,7 +33,7 @@ export const FS_CCGOODS_COLUMNS: Array<[string, string]> = [
   ["定価価格前文字", "const:定価"],
   ["定価価格後文字", "const:のところ"],
   ["販売価格前文字", "const:当店特別価格"],
-  ["取消線", "const:1"],
+  ["取消線", "func:fs_strike"], // CF=オープン価格は0 / PL=1
   ["定価表示方法", "func:fs_pl_zero"],
   ["在庫管理", "func:fs_stock_control"],
   ["在庫数表示設定", "func:fs_pl_zero"],

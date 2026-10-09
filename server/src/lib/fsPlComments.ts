@@ -24,6 +24,7 @@ export type PlRelated = {
   displayModelNumber: string | null; // イメージ名フォールバック判定用
   installationType: string | null;
   mainImage: string | null;
+  extra?: unknown; // itemType / sheet / opCategory(ALTの「製○○」に使う)
 };
 let relatedMap = new Map<string, PlRelated[]>();
 export function setPlRelated(map: Map<string, PlRelated[]>) {
@@ -62,13 +63,48 @@ const MAKER_URLS: Record<string, string> = {
 function imgFolder(p: ProductFull): string {
   return p.maker?.imgFolder ?? "";
 }
+// ページ名・画像ALT用の種別語尾(現行のページ名/SetImgAlt: 商品種別で「ペンダントライト」を置換。OP/ACはオプション)
+const PAGE_SUFFIX: Record<string, string> = {
+  PL: "製ペンダントライト",
+  CL: "製シーリングライト",
+  LR: "製ライティングレール",
+  AC: "製オプション",
+  OP: "製オプション",
+  CF: "製シーリングファン",
+};
+type PlExtraSource = { category: string; extra?: unknown };
+function plExtraOf(p: PlExtraSource): Record<string, unknown> {
+  return (p.extra ?? {}) as Record<string, unknown>;
+}
+export function plPageSuffix(p: PlExtraSource): string {
+  const itemType = plExtraOf(p).itemType;
+  if (typeof itemType === "string" && PAGE_SUFFIX[itemType]) return PAGE_SUFFIX[itemType];
+  return p.category === "CEILING_LIGHT" ? "製シーリングライト" : p.category === "CEILING_FAN" ? "製シーリングファン" : "製ペンダントライト";
+}
+// その他別管理一覧FS(VBAの gsActivesheetName = ETCITEM_DATA)由来の商品か
+function isOtherSheet(p: PlExtraSource): boolean {
+  return plExtraOf(p).sheet === "other";
+}
+function opCategoryOf(p: PlExtraSource): string {
+  const c = plExtraOf(p).opCategory;
+  return typeof c === "string" ? c : "";
+}
+// 画像ALTの語尾(SetImgAlt): その他別管理一覧FSは「製」+その他管理用カテゴリ1(例: 製オプション部品)
+export function plAltSuffix(p: PlExtraSource): string {
+  const x = plExtraOf(p);
+  if (x.sheet === "other") return `製${opCategoryOf(p)}`;
+  return plPageSuffix(p);
+}
+// イメージ名の有無(VBAの ICOL_ImgName <> "")。name はイメージ名が空なら掲載用型番(trim済み)で補完されるため、
+// 掲載用型番の生値・trim値のどちらとも違う場合だけイメージ名ありとみなす(掲載用型番の末尾スペース対策)
+export function plHasImageName(x: { name: string; displayModelNumber: string | null }): boolean {
+  return x.name !== x.displayModelNumber && x.name !== x.displayModelNumber?.trim();
+}
 // 画像ALT(独自コメント(20)と同じ): イメージ名 メーカー製ペンダントライト 代表型番 商品コード
-function altBase(p: ProductFull): string {
+export function altBase(p: ProductFull): string {
   const model = p.variations.find((v) => v.isRepresentative)?.modelNumber ?? "";
-  const imageName = p.name !== p.displayModelNumber ? `${p.name} ` : "";
-  const suffix =
-    p.category === "CEILING_LIGHT" ? "製シーリングライト" : p.category === "CEILING_FAN" ? "製シーリングファン" : "製ペンダントライト";
-  return `${imageName}${p.maker?.nameJp ?? ""}${suffix} ${model} ${p.productCode}`;
+  const imageName = plHasImageName(p) ? `${p.name} ` : "";
+  return `${imageName}${p.maker?.nameJp ?? ""}${plAltSuffix(p)} ${model} ${p.productCode}`;
 }
 // スライダー対象画像(メイン+イメージ。サイズ/機能は除く)。取込時のスロット順=シート列順
 function sliderImages(p: ProductFull) {
@@ -129,7 +165,8 @@ export function plComment02(p: ProductFull): string {
 
 // ============== 独自コメント(3): 取付方法タグ ==============
 export function plComment03(p: ProductFull): string {
-  const inst = p.lightingAttrs?.installationType ?? "";
+  // その他別管理一覧は取付方法ではなく商品ジャンル(その他管理用カテゴリ1)を表示
+  const inst = isOtherSheet(p) ? opCategoryOf(p) : (p.lightingAttrs?.installationType ?? "");
   // 閉じバナーが（4）なのは現行踏襲
   return wrapPlus(3, `<ul class="tag_label"> \n<li>${inst}</li>\n</ul>`, 4).replace("</ul>\n<!--", "</ul>\n<!--");
 }
@@ -165,7 +202,8 @@ export function plComment05(p: ProductFull): string {
     : INSTALL_IMAGES[inst]
       ? `<p class="t-center"><img src="/pl_img/products_detail/${INSTALL_IMAGES[inst][0]}" alt="${INSTALL_IMAGES[inst][1]}" width="700" height="${INSTALL_IMAGES[inst][2]}"></p>\n`
       : "";
-  const toritsuke = imgTag
+  // その他別管理一覧では取付タイプブロックを出さない
+  const toritsuke = imgTag && !isOtherSheet(p)
     ? `<div id="toritsuke_type" class="detail_block01">\n<h3 class="ttl_line01">取付タイプ</h3>\n${imgTag}</div><!--//toritsuke_type-->\n`
     : "";
   const body = `<div id="products_comment" class="detail_block01">\n<p>${comment}</p></div><!--//products_comment-->\n\n\n${toritsuke}\n\n\n<div class="btn_block01 detail_block01">\n  <p class="btn_gocart01"><a href="#product_cart_area"><span>ご注文はこちらから</span></a></p>\n</div><!--//btn_block01-->\n`;
@@ -333,22 +371,33 @@ function featureIcons(p: ProductFull, kindOverride?: string, v?: ProductFull["va
   return out;
 }
 
+// Excelの数値セルを文字列連結したときの表記(VBAは有効15桁。浮動小数の誤差桁を落とす)
+function fmtSize(raw: string): string {
+  const n = Number(raw);
+  return Number.isFinite(n) && raw.trim() !== "" ? String(parseFloat(n.toPrecision(15))) : raw;
+}
+
 export function plComment06(p: ProductFull): string {
   const a = p.lightingAttrs;
   const folder = imgFolder(p);
-  const tags = (a?.tags ?? {}) as Record<string, string | null>;
   const alt = altBase(p);
+  const other = isOtherSheet(p);
 
   // --- 商品詳細情報テーブル ---
   // カラー行: 取込時にbodyColorが色コード(13列)でフォールバックされることがあるため、コード値(英大文字)は現行同様に空扱い
   const colorName = p.bodyColor && !/^[A-Za-z]{1,3}$/.test(p.bodyColor) ? p.bodyColor : "";
-  const sizeRow = `幅：${p.widthMm ?? ""}mm　奥行：${p.depthMm ?? ""}mm　高さ：${p.heightMm ?? ""}mm`;
+  // サイズは取込時の生値(小数あり)を優先。無ければ整数カラム
+  const st = (plExtraOf(p).sizeText ?? {}) as Record<string, string | null | undefined>;
+  const sz = (raw: string | null | undefined, n: number | null) => (raw != null ? fmtSize(raw) : n != null ? String(n) : null);
+  const w = sz(st.width, p.widthMm);
+  const d = sz(st.depth, p.depthMm);
+  const h = sz(st.height, p.heightMm);
+  const hMin = sz(st.totalMin, p.totalHeightMinMm);
+  const hMax = sz(st.totalMax, p.totalHeightMaxMm);
+  const sizeRow = `幅：${w ?? ""}mm　奥行：${d ?? ""}mm　高さ：${h ?? ""}mm`;
+  // 全高: min-max / maxのみ。その他別管理一覧は両方空なら高さで代用(VBA準拠)
   const heightText =
-    p.totalHeightMinMm != null && p.totalHeightMaxMm != null
-      ? `${p.totalHeightMinMm}-${p.totalHeightMaxMm}`
-      : p.totalHeightMaxMm != null
-        ? `${p.totalHeightMaxMm}`
-        : "";
+    hMin != null && hMax != null ? `${hMin}-${hMax}` : hMax != null ? hMax : other && h != null ? h : "";
   const heightRow =
     heightText
       ? `  <tr>\n    <th>全高</th>\n    <td>${heightText}mm</td>\n  </tr>\n`
@@ -387,15 +436,35 @@ ${heightRow}  <tr>
     <th>口金</th>
     <td>${a?.bulbBase ?? ""}</td>
   </tr>
-</table>
+</table>`;
 
-</div><!--//products_details-->`;
-
-  // --- 電球タブ(○行=listedのバリエーションのみ対象) ---
   // タブは行レベルの○かつ販売終了(E列○)でない行が対象(VBA準拠。全行終了なら空)
   const vars = p.variations
     .filter((v) => v.listed && !v.eosFlag)
     .sort((x, y) => x.variationNo - y.variationNo);
+
+  // その他別管理一覧: 電球タブ・choko画像は出さず、先頭対象行の機能詳細を「仕様」テーブルに入れる。
+  // VBAはタブ本文(機能詳細+改行+txtbox閉じ+txt閉じ)からtxtbox閉じ・txt閉じを除去した残り(改行)をそのまま出す
+  const specText = other
+    ? (vars[0] ? `${(vars[0].detail ?? p.detail ?? "").replace(/\r\n|\r|\n/g, "<br>\n")}\n\n\n\n` : "")
+    : "";
+  const details = other
+    ? `${table}
+<table class="product_table sp100">
+   <tr>
+       <th>仕様</th>
+   <td>
+${specText}
+    </td>
+  </tr>
+</table>
+
+</div><!--//products_details-->`
+    : `${table}
+
+</div><!--//products_details-->`;
+
+  // --- 電球タブ(○行=listedのバリエーションのみ対象) ---
   const radios = vars
     .map((v, i) => `  <input type="radio" name="tab" id="item_0${i + 1}"${v.isRepresentative ? " checked" : ""}>\n`)
     .join("");
@@ -453,7 +522,10 @@ ${tabs ? `${tabs}\n\n\n` : ""}  </div><!--//product_tab_cont-->
 
   // --- 設置事例・機能説明 ---
   const folderImgs = p.images.filter((i) => i.imageType === "IMAGE" && i.fileName).sort((x, y) => x.sortNo - y.sortNo);
-  const imgAlt = (fileName: string) => fileName.replace(/\.[a-z]+$/i, "").split("_").join(" ");
+  // VBA準拠のReplace: 設置イメージは .jpg/.jpeg/.png のみ除去(.gifは残る)、機能説明は .gif も除去
+  const imgAlt = (fileName: string, exts = [".jpg", ".jpeg", ".png"]) =>
+    exts.reduce((t, e) => t.split(e).join(""), fileName).split("_").join(" ");
+  const fAlt = (fileName: string) => imgAlt(fileName, [".jpg", ".jpeg", ".png", ".gif"]);
   const images01 = folderImgs.length
     ? `<div id="products_images01" class="products_img detail_block01">
 <h3 class="ttl_line01">設置事例　商品説明</h3>
@@ -461,8 +533,9 @@ ${tabs ? `${tabs}\n\n\n` : ""}  </div><!--//product_tab_cont-->
 <ul class="slide_box">
 ${folderImgs
         .map(
-          (img, i) =>
-            `  <li><img src="${IMG_BASE}/${folder}/${img.fileName}" alt="${alt} ${imgAlt(img.fileName)} 設置イメージ写真${String(i + 1).padStart(2, "0")}" width="800" height="800" loading="lazy" /></li>`
+          // 連番はVBAの「列-I01列+1」= スロット位置(空きスロットがあっても詰めない)
+          (img) =>
+            `  <li><img src="${IMG_BASE}/${folder}/${img.fileName}" alt="${alt} ${imgAlt(img.fileName)} 設置イメージ写真${String(img.sortNo).padStart(2, "0")}" width="800" height="800" loading="lazy" /></li>`
         )
         .join("\n")}
 </ul>
@@ -471,7 +544,7 @@ ${folderImgs
     : "";
   // 機能説明: choko画像(タブ対象行のビットフラグ) + サイズ画像(S01-03) + 機能説明画像(F01-06)
   // 連番はVBAの「列-F01列+1」準拠: サイズ画像は -02/-01/00、機能説明画像は 01..06
-  const bit = vars.reduce((m, v) => {
+  const bit = other ? 0 : vars.reduce((m, v) => {
     const { kind, typ } = rowBulb(p, v);
     return m | (BULB_FLAGS[`${kind}${typ}`] ?? 0);
   }, 0);
@@ -486,11 +559,11 @@ ${folderImgs
     );
   for (const img of sizeImgs)
     featureLines.push(
-      `  <li><img src="${IMG_BASE}/${folder}/${img.fileName}" alt="${alt} ${imgAlt(img.fileName)} 機能説明画像${fmtNo(img.sortNo - 3)}" width="800" height="800" loading="lazy" /></li>`
+      `  <li><img src="${IMG_BASE}/${folder}/${img.fileName}" alt="${alt} ${fAlt(img.fileName)} 機能説明画像${fmtNo(img.sortNo - 3)}" width="800" height="800" loading="lazy" /></li>`
     );
   for (const img of fImgs)
     featureLines.push(
-      `  <li><img src="${IMG_BASE}/${folder}/${img.fileName}" alt="${alt} ${imgAlt(img.fileName)} 機能説明画像${fmtNo(img.sortNo)}" width="800" height="800" loading="lazy" /></li>`
+      `  <li><img src="${IMG_BASE}/${folder}/${img.fileName}" alt="${alt} ${fAlt(img.fileName)} 機能説明画像${fmtNo(img.sortNo)}" width="800" height="800" loading="lazy" /></li>`
     );
   const images03 = featureLines.length
     ? `<div id="products_images03" class="products_img detail_block01">
@@ -511,7 +584,9 @@ ${featureLines.join("\n")}
   if (images01) tail += `\n\n\n\n${images01}`;
   if (images03) tail += images01 ? `\n\n\n${images03}` : `\n\n\n\n${images03}`;
   // 画像ブロックが無い場合はカート直後に空行が1行多い(現行出力)
-  const body = `${table}\n\n\n\n${tabBlock}\n\n\n\n${tail}${images01 || images03 ? "\n\n" : "\n\n\n"}`;
+  const body = other
+    ? `${details}\n\n\n\n${tail}${images01 || images03 ? "\n\n" : "\n\n\n"}`
+    : `${details}\n\n\n\n${tabBlock}\n\n\n\n${tail}${images01 || images03 ? "\n\n" : "\n\n\n"}`;
   return wrapPlus(6, body);
 }
 
@@ -520,7 +595,7 @@ export function plComment07(p: ProductFull): string {
   const models = [...new Set(p.variations.filter((v) => v.listed).map((v) => v.modelNumber).filter(Boolean))];
   const body = `<div id="product_item_detail" class="detail_block01">
 <ul>
-  <li><a href="/spec/${p.productCode}.html" target="_blank">${models.join(" / ")} ${p.maker?.nameJp ?? ""}製ペンダントライト SPEC</a></li>
+  <li><a href="/spec/${p.productCode}.html" target="_blank">${models.join(" / ")} ${p.maker?.nameJp ?? ""}${isOtherSheet(p) ? `製${opCategoryOf(p)}` : "製ペンダントライト"} SPEC</a></li>
 </ul>
 </div><!--//product_item_detail-->
 `;
@@ -537,8 +612,8 @@ export function plComment08(p: ProductFull): string {
   const items = related
     .map((r) => {
       const self = r.productCode === p.productCode;
-      const suffix = r.category === "CEILING_LIGHT" ? "製シーリングライト" : r.category === "CEILING_FAN" ? "製シーリングファン" : "製ペンダントライト";
-      const imageName = r.name !== r.displayModelNumber ? `${r.name} ` : "";
+      const suffix = plAltSuffix(r);
+      const imageName = plHasImageName(r) ? `${r.name} ` : "";
       const alt = `${imageName}${p.maker?.nameJp ?? ""}${suffix} メイン型番 ${self ? "メイン商品" : "関連商品"} メインイメージ01`;
       return `    <li${self ? ' class="on"' : ""}><a href="/c/${folder}/${r.productCode}"><img src="${IMG_BASE}/${folder}/${r.mainImage ?? ""}" alt="${alt}" width="340" height="340" loading="lazy" /><span>${r.installationType ?? ""}</span></a></li>`;
     })
@@ -563,7 +638,10 @@ ${items}
 // ============== 独自コメント(9): 生産終了/入荷待ちバナー ==============
 export function plComment09(p: ProductFull): string {
   let body = "";
-  if (p.status === "DISCONTINUED" || p.status === "DISCONTINUED_IN_STOCK" || p.status === "HIDDEN") {
+  // VBA準拠: 代表バリエーション行(親行)の販売終了(E列○)で判定。代表行が無い場合のみステータスで代用
+  const repVar = p.variations.find((v) => v.isRepresentative);
+  const eos = repVar ? repVar.eosFlag : isDiscontinuedPl(p);
+  if (eos) {
     body = `<div class="bnr_end01">
     <dl>
       <dt>こちらの商品は<span>メーカー生産終了品</span>となります。</dt>

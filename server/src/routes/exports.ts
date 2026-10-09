@@ -8,7 +8,15 @@ import iconv from "iconv-lite";
 import JSZip from "jszip";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
-import { cfComment11, cfComment12, cfComment14, cfComment15, cfComment16 } from "../lib/fsCfComments.js";
+import {
+  cfComment04, cfComment11, cfComment12, cfComment13, cfComment14, cfComment15, cfComment16, cfExternalCatchCopy,
+  cfImageFileNames, setCfImageSizes,
+} from "../lib/fsCfComments.js";
+import {
+  cfModelConcat, cfFsProductName, cfMaker, cfSortPriority, cfStockControl, cfVariationAxis,
+  cfOtherServiceStatus, cfJanWide, cfPageKeywords, cfDescription, cfDescriptionLarge, cfStrikeThrough,
+  cfComment17,
+} from "../lib/fsCfGoods.js";
 import {
   FS_SUB_FILE_TYPES,
   FS_SUB_FILE_NAMES,
@@ -18,8 +26,18 @@ import {
   type FsSubFileType,
 } from "../lib/fsSubCsv.js";
 import {
+  FS_CF_ONLY_FILE_TYPES,
+  FS_CF_SUB_FILE_NAMES,
+  FS_CF_SUB_SPLIT_ROWS,
+  CF_COMMENT16_COLUMNS,
+  cfComment16Targets,
+  fsCfSubCsvHeader,
+  generateFsCfSubCsv,
+  isCfSubFileType,
+} from "../lib/fsCfSubCsv.js";
+import {
   plComment02, plComment03, plComment04, plComment05, plComment06,
-  plComment07, plComment08, plComment09, plRelKey, setPlRelated, type PlRelated,
+  plComment07, plComment08, plComment09, plRelKey, setPlRelated, type PlRelated, plPageSuffix, altBase,
 } from "../lib/fsPlComments.js";
 
 export const exportsRouter = Router();
@@ -47,13 +65,17 @@ const filterQuery = z.object({
   // マーク付きのみ出力（クライアントのローカルストレージから商品コードを受け取る）
   productCodes: z.array(z.string().min(1)).max(20000).optional(),
   // ファイル種別: products(商品CSV・既定) / futureshopのサブCSV各種 /
-  // Excelボタン相当のセット(option_set=オプション2種, variation_set_new/update=バリエーション4種をZIPで)
+  // Excelボタン相当のセット(option_set=オプション2種, variation_set_new/update=バリエーション4種(CFは3種)をZIPで)
+  // CF固有: tag=商品タグ / image_alt=商品画像ALT / comment16=独自コメント16部分更新
   fileType: z
-    .enum(["products", ...FS_SUB_FILE_TYPES, "option_set", "variation_set_new", "variation_set_update"])
+    .enum([
+      "products", ...FS_SUB_FILE_TYPES, ...FS_CF_ONLY_FILE_TYPES,
+      "option_set", "variation_set_new", "variation_set_update",
+    ])
     .optional(),
 });
 
-type Filter = z.infer<typeof filterQuery>;
+export type Filter = z.infer<typeof filterQuery>;
 
 function buildWhere(f: Filter): Prisma.ProductWhereInput {
   return {
@@ -155,30 +177,22 @@ const FUNCS: Record<
   // オススメ商品: CF=関連商品列に値があれば表示1+リスト(現行のSetオススメ商品*)。PLは0/空
   fs_recommend_flag: (p) => (isPL(p) ? "0" : p.relatedProducts ? "1" : ""),
   fs_recommend_list: (p) => (isPL(p) ? "" : (p.relatedProducts ?? "")),
-  // 商品名: CF=「商品名 [型番] メーカー名製シーリングファン[ライト]【商品コード】」
-  //         PL=「イメージ名 | 型番 メーカー名製ペンダントライト」(暫定・要比較検証)
+  // 商品名: CF=現行の FS商品名(特徴語+商品名+メーカー名製シーリングファン[ライト]【商品名ID】。lib/fsCfGoods.ts)
+  //         PL=「[取付タイプ] イメージ名 | [掲載用型番] メーカー名製ペンダントライト」
   fs_product_name: (p) => {
-    const parts: string[] = [];
-    if (p.isSameDayShipping && !isPL(p)) parts.push("即日発送");
-    parts.push(fsBaseName(p));
-    const model = fsModel(p);
-    if (!isPL(p) && model && (p.priceControlled || !p.modelNumber)) parts.push(model);
+    if (!isPL(p)) return cfFsProductName(p);
     const maker = p.maker?.nameJp ?? "";
-    if (isPL(p)) {
-      // PL: [取付タイプ] イメージ名 | メーカー名製ペンダントライト(種別で語尾置換)
-      const inst = p.lightingAttrs?.installationType;
-      // VBA準拠: [取付] + (イメージ名あり→「イメージ名 | 」) + (掲載用型番が本体型番と違えば「掲載用型番 」) + メーカー名製…
-      // イメージ名が空の商品は取込時に掲載用型番がnameへフォールバックしているため、name==掲載用型番なら「イメージ名なし」扱い
-      const hasImageName = p.name !== p.displayModelNumber;
-      const disp = p.displayModelNumber && p.displayModelNumber !== p.modelNumber ? `${p.displayModelNumber} ` : "";
-      let name = `${inst ? `[${inst}] ` : ""}${hasImageName ? `${p.name} | ` : ""}${disp}${maker}${plSuffix(p)}`;
-      if (isDiscontinued(p)) name = `【生産終了品】${name}`;
-      return name;
-    }
-    const light = (p.fanAttrs?.lightCount ?? 0) > 0 ? "ライト" : "";
-    return `${parts.join(" ")} ${maker}製シーリングファン${light}【${p.productCode}】`;
+    // PL: [取付タイプ] イメージ名 | メーカー名製ペンダントライト(種別で語尾置換)
+    const inst = p.lightingAttrs?.installationType;
+    // VBA準拠: [取付] + (イメージ名あり→「イメージ名 | 」) + (掲載用型番が本体型番と違えば「掲載用型番 」) + メーカー名製…
+    // イメージ名が空の商品は取込時に掲載用型番がnameへフォールバックしているため、name==掲載用型番なら「イメージ名なし」扱い
+    const hasImageName = p.name !== p.displayModelNumber;
+    const disp = p.displayModelNumber && p.displayModelNumber !== p.modelNumber ? `${p.displayModelNumber} ` : "";
+    let name = `${inst ? `[${inst}] ` : ""}${hasImageName ? `${p.name} | ` : ""}${disp}${maker}${plSuffix(p)}`;
+    if (plEos(p)) name = `【生産終了品】${name}`;
+    return name;
   },
-  // メイングループ: CF=FSカテゴリ用メーカー表記(makers.aliases.fsGroup)。
+  // メイングループ: CF=FSカテゴリ用メーカー表記(Setメーカー名 iClass=10)。
   // PL=シートのメイングループ列(summaryに取込済み)を優先し、末尾スペース等はalias(fsGroupPl)で補正
   fs_main_group: (p) => {
     if (isPL(p)) {
@@ -186,19 +200,23 @@ const FUNCS: Record<
       const plGroup = aliases && typeof aliases.fsGroupPl === "string" ? aliases.fsGroupPl : null;
       return plGroup ?? p.summary ?? fsMakerGroup(p);
     }
-    return fsMakerGroup(p);
+    return cfMaker(p, 10);
   },
   // 優先度: CF=並び順番号+高さ(+生産終了10万)。
   // PL=Int(幅/50)*10000+(幅/50の小数部)*100+メーカー係数(makers.sort_level)*50(+生産終了50万)
   fs_sort_priority: (p) => {
     if (isPL(p)) {
-      const w = p.widthMm ?? 0;
+      // 幅はセル生値(小数あり)。VBAはLong変数への代入で丸める(銀行丸め)
+      const rawWidth = ((plExtra(p).sizeText ?? {}) as Record<string, unknown>).width;
+      const w = rawWidth != null && rawWidth !== "" ? Number(rawWidth) : (p.widthMm ?? 0);
       const level = p.maker && p.maker.sortLevel < 100 ? p.maker.sortLevel : 0;
-      let v = Math.floor(w / 50) * 10000 + (w % 50) * 2 + level * 50;
-      if (isDiscontinued(p)) v += 500000;
+      const q = w / 50;
+      let v = vbRound(Math.floor(q) * 10000 + (q - Math.floor(q)) * 100) + level * 50;
+      if (plEos(p)) v += 500000;
+      else if (plExtra(p).sheet === "other") v += 100000; // SORT_LEVEL_ETC(その他製品)
       return v;
     }
-    return (isDiscontinued(p) ? 100000 : 0) + (p.sortNo ?? 0) + (p.heightMm ?? 0);
+    return cfSortPriority(p);
   },
   // 本体価格: FS税設定(taxType)に従い税込/税別の販売価格を切捨て
   fs_sales_price: (p) => {
@@ -227,29 +245,33 @@ const FUNCS: Record<
     return p.fsShippingPattern || "1";
   },
   // 在庫管理: PL=1固定(Variationモード運用) / CF=バリエーションあり or 生産終了→1
-  fs_stock_control: (p) =>
-    isPL(p) ? "1" : p.variations.length > 1 || isDiscontinued(p) ? "1" : "0",
-  // 現在在庫数: CF=空。PL=Variationモード相当(バリエーション運用)なら生産終了0/通常1000
+  // 在庫管理: PL=シートA1のモードで切替(Optionモード=生産終了のみ1 / Variationモード=1) / CF=バリエーションあり or 生産終了→1
+  fs_stock_control: (p) => {
+    if (!isPL(p)) return cfStockControl(p);
+    return plOptionMode(p) ? (plEos(p) ? "1" : "0") : "1";
+  },
+  // 現在在庫数: CF=空。PL=Optionモードは0 / Variationモードは生産終了0・通常1000
   fs_current_stock: (p) => {
     if (!isPL(p)) return "";
-    return isDiscontinued(p) ? "0" : "1000";
+    if (plOptionMode(p)) return "0";
+    return plEos(p) ? "0" : "1000";
   },
-  fs_variation_axis: (p) =>
-    isPL(p) ? "" : (p.variations.length > 1 ? (p.variations[0]?.axisName ?? "") : ""),
+  fs_variation_axis: (p) => (isPL(p) ? "" : cfVariationAxis(p)),
   // ステータス(他社サービス): PL=0固定(生産終了でもOFFにしない現行仕様) /
   // CF=生産終了 or 入荷待ち文言つき在庫切れ→1(掲載OFF)
-  fs_other_service_status: (p) =>
-    isPL(p) ? "0" : isDiscontinued(p) || (p.status === "BACKORDER" && p.statusNote) ? "1" : "0",
+  fs_other_service_status: (p) => (isPL(p) ? "0" : cfOtherServiceStatus(p)),
   // JANコード: 13桁を全角化(現行のJANコードWide)
   fs_jan_wide: (p, v) => {
+    if (!isPL(p)) return cfJanWide(p);
     const jan = (v.janCode ?? p.janCode ?? "").replace(/[',\s-]/g, "");
     if (!jan) return "";
     return jan.slice(0, 13).replace(/[0-9]/g, (d) => String.fromCharCode(d.charCodeAt(0) + 0xfee0));
   },
   fs_layout_name: (p) => {
     if (!isPL(p)) return "";
-    // PL: fazoo延長保証(129列○)の有無で切替(現行のレイアウト割当名関数)
-    return p.warranty === "○" ? "バリエーション" : "バリエーション(3年保証無し)";
+    // PL: fazoo延長保証(129列○)の有無で切替(現行のレイアウト割当名関数)。その他別管理一覧はオプション品
+    const base = plExtra(p).sheet === "other" ? "オプション品" : "バリエーション";
+    return p.warranty === "○" ? base : `${base}(3年保証無し)`;
   },
   fs_page_name: (p) => {
     if (isPL(p)) {
@@ -261,7 +283,7 @@ const FUNCS: Record<
         .map((v) => `${v.modelNumber} `)
         .join("");
       const maker = p.maker?.nameJp ?? "";
-      let base = `${maker}${plSuffix(p)} | {% shop.name %}`;
+      let base = `${maker}${plPageSuffix(p)} | {% shop.name %}`;
       if (sjisLen(models + base) >= 100) base = base.replace("| {% shop.name %}", " ");
       let head = models;
       if (sjisLen(models + base) >= 100) {
@@ -286,109 +308,79 @@ const FUNCS: Record<
   },
   fs_keywords: (p) => {
     if (isPL(p)) return `${p.productCode},${p.maker?.nameJp ?? ""},ペンダントライト`;
-    const model = fsModel(p);
-    return `${model},${p.maker?.nameEn ?? ""},${p.maker?.nameJp ?? ""},シーリングファン,インテリアファン,天井扇`;
+    return cfPageKeywords(p);
   },
   fs_description: (p) => {
     const maker = p.maker?.nameJp ?? "";
     if (isPL(p)) {
       return `${maker}製 ${p.productCode}の商品詳細ページです。ペンダントライト・ダイニング照明選びならファズーにおまかせ。専門店として選びやすく豊富な品揃え！もちろん設置方法や取り付け工事まで丁寧にサポートします。`;
     }
-    const light = (p.fanAttrs?.lightCount ?? 0) > 0 ? "ライト" : "";
-    const group = fsMakerGroup(p);
-    return `${group}製シーリングファン${light}の商品ページ｜失敗しないシーリングファン選びなら通販専門店ファズー 吹き抜けや傾斜・勾配天井用からマンションや賃貸でも設置できる薄型・小型・軽量・ライト付きの商品を提供(${fsModel(p)})`;
+    return cfDescription(p);
   },
   // 商品説明(大): CF=「型番 メーカー英字 メーカー和名 商品コード」/ PL=空
-  fs_description_large: (p) =>
-    isPL(p)
-      ? ""
-      : [fsModel(p) || null, p.maker?.nameEn, p.maker?.nameJp, p.productCode].filter(Boolean).join(" "),
-  // 外部連携任意項目(外部用キャッチコピー)。TODO: 現行の全文を再現する
-  fs_catch_copy: () => "",
+  fs_description_large: (p) => (isPL(p) ? "" : cfDescriptionLarge(p)),
+  // 取消線: CF=定価がオープン価格(0)なら0 / PL=1固定
+  fs_strike: (p) => (isPL(p) ? "1" : cfStrikeThrough(p)),
+  // 外部連携任意項目: CF=外部用キャッチコピー / PL=空
+  fs_catch_copy: (p) => (isPL(p) ? "" : cfExternalCatchCopy(p)),
 };
 
 // 独自コメント(1)〜(20)。CF: 機能削除済みの枠は固定コメント、(4)(11)〜(16)(20)はHTML生成(TODO)。
 // PL: (1)=メーカー・型番span、(2)〜(9)=HTML生成(TODO)、(10)〜(19)=半角スペース1文字、(20)=画像ALT文字列
 const CF_FIXED_COMMENTS = new Set([1, 2, 3, 5, 6, 7, 8, 9, 10, 18, 19]);
+// 現行VBAはHTMLを vbNewLine(Windows=CRLF) で組み立てる。生成側は\nで書き、出力時にCRLFへ揃える
+function toCrlf(s: string): string {
+  return s.replace(/\r?\n/g, "\r\n");
+}
 function fsComment(p: ProductFull, n: number): string {
-  if (isPL(p)) {
-    if (n === 1) {
-      return `<span class="pro_maker">${p.maker?.nameEn ?? ""}</span><span class="pro_fazoono">${p.productCode}</span>`;
-    }
-    if (n === 2) return plComment02(p);
-    if (n === 3) return plComment03(p);
-    if (n === 4) return plComment04(p);
-    if (n === 5) return plComment05(p);
-    if (n === 6) return plComment06(p);
-    if (n === 7) return plComment07(p);
-    if (n === 8) return plComment08(p);
-    if (n === 9) return plComment09(p);
-    if (n >= 10 && n <= 19) return " ";
-    if (n === 20) {
-      const model = p.variations.find((v) => v.isRepresentative)?.modelNumber ?? fsModel(p);
-      const imageName = p.name !== p.displayModelNumber ? `${p.name} ` : "";
-      return `${imageName}${p.maker?.nameJp ?? ""}${plSuffix(p)} ${model} ${p.productCode}`;
-    }
-    return "";
+  return isPL(p) ? toCrlf(fsCommentPl(p, n)) : fsCommentCf(p, n);
+}
+function fsCommentPl(p: ProductFull, n: number): string {
+  if (n === 1) {
+    return `<span class="pro_maker">${p.maker?.nameEn ?? ""}</span><span class="pro_fazoono">${p.productCode}</span>`;
   }
+  if (n === 2) return plComment02(p);
+  if (n === 3) return plComment03(p);
+  if (n === 4) return plComment04(p);
+  if (n === 5) return plComment05(p);
+  if (n === 6) return plComment06(p);
+  if (n === 7) return plComment07(p);
+  if (n === 8) return plComment08(p);
+  if (n === 9) return plComment09(p);
+  if (n >= 10 && n <= 19) return " ";
+  if (n === 20) return altBase(p); // 現行のSetImgAlt
+  return "";
+}
+function fsCommentCf(p: ProductFull, n: number): string {
   if (CF_FIXED_COMMENTS.has(n)) {
     return `<!-- ------------独自コメント（${String(n).padStart(2, "0")}）---------- -->`;
   }
+  if (n === 4) return cfComment04(p);
   if (n === 11) return cfComment11(p);
   if (n === 12) return cfComment12(p, cfModelConcat(p));
+  if (n === 13) return cfComment13(p);
   if (n === 14) return cfComment14(p, cfModelConcat(p));
   if (n === 15) return cfComment15(p);
   if (n === 16) return cfComment16(p);
-  if (n === 17) {
-    return `${fsMakerGroup(p)}製のシーリングファン選びならファズーにおまかせください【品揃え日本一】`;
-  }
+  if (n === 17) return cfComment17(p);
   return ""; // (4)(11)〜(16)(20): HTML生成(TODO)
 }
 for (let n = 1; n <= 20; n++) {
   FUNCS[`fs_comment_${n}`] = (p) => fsComment(p, n);
 }
 
-// CFの型番連結(現行のSet型番連結 iClass=1)。列順: 組み合わせ/一体型→ファン→ライト→パイプ→
-// フランジ→リモコン→羽根→オプション→バリエーション1〜3。バリエーション型番は初出時に
-// 「v1 / v2 + 」(3個時は「v1 / v2 / v3 + 」)の形でまとめて連結される
-function cfModelConcat(p: ProductFull): string {
-  let out = "";
-  if (p.combinationModel) out = `${p.combinationModel}/`;
-  const extra = (p.extra ?? {}) as Record<string, unknown>;
-  const vFromExtra = Array.isArray(extra.cfVariationModels)
-    ? (extra.cfVariationModels as (string | null)[])
-    : null;
-  // 取込済みextraがあればシートのバリエーション型番セルそのまま。無ければ複数バリエーション時のみ代用
-  const vModels = vFromExtra
-    ? [vFromExtra[0] ?? "", vFromExtra[1] ?? "", vFromExtra[2] ?? ""]
-    : p.variations.length > 1
-      ? [1, 2, 3].map((n) => p.variations.find((v) => v.variationNo === n)?.modelNumber ?? "")
-      : ["", "", ""];
-  const ROLE_ORDER = ["FAN", "LIGHT", "PIPE", "FLANGE", "REMOTE", "BLADE", "OPTION"];
-  const cols = [
-    p.modelNumber ?? "",
-    ...ROLE_ORDER.map((role) => p.setComponents.find((c) => c.role === role)?.componentModel ?? ""),
-    ...vModels,
-  ];
-  let variationDone = false;
-  for (const m of cols) {
-    if (!m) continue;
-    if (m === vModels[0] || m === vModels[1] || m === vModels[2]) {
-      if (!variationDone) {
-        out += `${vModels[0]} / `;
-        if (vModels[2]) out += `${vModels[1]} / ${vModels[2]} + `;
-        else out += `${vModels[1]} + `;
-        variationDone = true;
-      }
-    } else {
-      out += `${m} + `;
-    }
-  }
-  return out ? out.slice(0, -3) : "";
-}
-
-// PL系の種別語尾(製ペンダントライト/製シーリングライト等)
+// PL系の種別語尾(現行のFS商品名: 商品種別でペンダントライト部分を置換)
+const PL_ITEM_SUFFIX: Record<string, string> = {
+  PL: "製ペンダントライト",
+  CL: "製シーリングライト",
+  LR: "製ライティングレール",
+  AC: "製オプション",
+  OP: "製",
+  CF: "製シーリングファン",
+};
 function plSuffix(p: ProductFull): string {
+  const itemType = (p.extra as Record<string, unknown> | null)?.itemType;
+  if (typeof itemType === "string" && PL_ITEM_SUFFIX[itemType]) return PL_ITEM_SUFFIX[itemType];
   switch (p.category) {
     case "CEILING_LIGHT":
       return "製シーリングライト";
@@ -399,6 +391,16 @@ function plSuffix(p: ProductFull): string {
     default:
       return "製ペンダントライト";
   }
+}
+
+// PLの行単位のFS商品名(現行のFS商品名(lRow)=MakeProductName(lRow))。バリエーション詳細登録の商品名に使う。
+// 取付タイプ・イメージ名・掲載用型番・生産終了は行ごとの値で組み立てる
+function fsRowProductName(p: ProductFull, v: Variation): string {
+  const inst = v.rowInstallType ? `[${v.rowInstallType}] ` : "";
+  const imageName = v.rowName ? `${v.rowName} | ` : "";
+  const disp = v.rowDisplayModel && v.rowDisplayModel !== v.modelNumber ? `${v.rowDisplayModel} ` : "";
+  const name = `${inst}${imageName}${disp}${p.maker?.nameJp ?? ""}${plSuffix(p)}`;
+  return v.eosFlag ? `【生産終了品】${name}` : name;
 }
 
 // FSカテゴリ・グループ用メーカー表記(例: ダルトン／DULTON)。makers.aliases.fsGroup に持つ
@@ -438,6 +440,24 @@ function sjisLen(s: string): number {
 function isPL(p: ProductFull): boolean {
   return /^[A-Z]+-\d/.test(p.productCode);
 }
+// VBAの数値→Long変換(CLng)の丸め: 0.5ちょうどは偶数側へ(銀行丸め)
+function vbRound(x: number): number {
+  const f = Math.floor(x);
+  const d = x - f;
+  if (Math.abs(d - 0.5) < 1e-9) return f % 2 === 0 ? f : f + 1;
+  return Math.round(x);
+}
+function plExtra(p: ProductFull): Record<string, unknown> {
+  return (p.extra ?? {}) as Record<string, unknown>;
+}
+// シートA1セルが「Optionモード」(その他別管理一覧FS)
+function plOptionMode(p: ProductFull): boolean {
+  return plExtra(p).sheetMode === "Optionモード";
+}
+// PLの生産終了判定: 現行VBAは親(代表)行のE列「販売終了」= ○ で判定する
+function plEos(p: ProductFull): boolean {
+  return (p.variations.find((v) => v.isRepresentative) ?? p.variations[0])?.eosFlag ?? false;
+}
 function isDiscontinued(p: ProductFull): boolean {
   return p.status === "DISCONTINUED" || p.status === "DISCONTINUED_IN_STOCK" || p.status === "HIDDEN";
 }
@@ -476,7 +496,7 @@ function csvField(s: string): string {
 
 type ExportProgress = (phase: string, processed: number, total: number) => void;
 
-async function generateRows(f: Filter, onProgress?: ExportProgress) {
+export async function generateRows(f: Filter, onProgress?: ExportProgress) {
   onProgress?.("商品データ読み込み中", 0, 0);
   const channel = await prisma.channel.findUniqueOrThrow({
     where: { id: f.channelId },
@@ -501,12 +521,42 @@ async function generateRows(f: Filter, onProgress?: ExportProgress) {
       },
       orderBy: [{ sheetRow: "asc" }, { id: "asc" }],
     })) as ProductFull[];
+    // CFブック(商品コードがPL形式でない)の商品が含まれていればCF版で生成(PL形式の商品は除く)。
+    // ヘッダー・ファイル名・分割件数もCF用(subMeta)を返す
+    const cfs = subProducts.filter((p) => !isPL(p) && p.sheetRow != null);
+    const cfOnly = (FS_CF_ONLY_FILE_TYPES as readonly string[]).includes(f.fileType);
+    if (cfs.length > 0 || cfOnly) {
+      if (!isCfSubFileType(f.fileType)) {
+        throw Object.assign(new Error("このファイル種別はシーリングファン(CF)では出力しません"), { status: 400 });
+      }
+      const cfType = f.fileType;
+      const subMeta = { book: "CF" as const, fileBase: FS_CF_SUB_FILE_NAMES[cfType], splitRows: FS_CF_SUB_SPLIT_ROWS[cfType] };
+      onProgress?.("生成中", 0, cfs.length);
+      if (cfType === "comment16") {
+        // 独自コメント16部分更新: 商品CSVと同じ列(CFは「商品URL」列なし)で、決まった列だけ商品CSVの列関数で値を入れる
+        const maps = channel.fieldMaps.filter((m) => m.outputHeader !== "商品URL");
+        const header = maps.map((m) => m.outputHeader);
+        const rows = cfComment16Targets(cfs).map((p) => {
+          const v = p.variations.find((x) => x.isRepresentative) ?? p.variations[0];
+          return maps.map((m) =>
+            CF_COMMENT16_COLUMNS.has(m.outputHeader) && v ? resolveExpr(m.sourceExpr, p, v, channel) : ""
+          );
+        });
+        onProgress?.("生成中", cfs.length, cfs.length);
+        return { channel, header, rows, fileType, subMeta };
+      }
+      const header = fsCfSubCsvHeader(cfType);
+      const rows = generateFsCfSubCsv(cfType, cfs);
+      onProgress?.("生成中", cfs.length, cfs.length);
+      return { channel, header, rows, fileType, subMeta };
+    }
     const pls = subProducts.filter((p) => isPL(p) && p.sheetRow != null);
     onProgress?.("生成中", 0, pls.length);
     const header = fsSubCsvHeader(fileType);
-    const rows = generateFsSubCsv(fileType, pls, (p) => String(FUNCS.fs_product_name(p, p.variations[0]!, channel) ?? ""));
+    const rows = generateFsSubCsv(fileType, pls, fsRowProductName);
     onProgress?.("生成中", pls.length, pls.length);
-    return { channel, header, rows, fileType };
+    const subMeta = { book: "PL" as const, fileBase: FS_SUB_FILE_NAMES[fileType], splitRows: FS_SUB_SPLIT_ROWS[fileType] };
+    return { channel, header, rows, fileType, subMeta };
   }
   if (channel.fieldMaps.length === 0) {
     throw Object.assign(new Error("この連携先の列定義（channel_field_maps）が未登録です"), {
@@ -543,14 +593,15 @@ async function generateRows(f: Filter, onProgress?: ExportProgress) {
         lightingAttrs: { select: { installationType: true } },
         images: { where: { imageType: "MAIN" }, orderBy: { sortNo: "asc" }, take: 1 },
         variations: {
-          select: { variationNo: true, listed: true, eosFlag: true, relKey: true, isRepresentative: true },
+          select: { variationNo: true, listed: true, eosFlag: true, relKey: true, isRepresentative: true, imageName: true },
           orderBy: { variationNo: "asc" },
         },
       },
     });
     const pls = allPl.filter((g) => /^[A-Z]+-\d/.test(g.productCode));
     const meta = new Map<string, PlRelated>();
-    type SheetRow = { code: string; relKey: string; listed: boolean; eos: boolean };
+    // img: 行のメイン画像1(関連商品の画像は範囲内で最初に掲載される行の画像)
+    type SheetRow = { code: string; relKey: string; listed: boolean; eos: boolean; img: string | null };
     const sheet: SheetRow[] = [];
     const repIndex = new Map<string, number>();
     for (const g of pls) {
@@ -561,12 +612,13 @@ async function generateRows(f: Filter, onProgress?: ExportProgress) {
         displayModelNumber: g.displayModelNumber,
         installationType: g.lightingAttrs?.installationType ?? null,
         mainImage: g.images[0]?.fileName ?? null,
+        extra: g.extra,
       });
-      const vars = g.variations.length > 0 ? g.variations : [{ variationNo: 1, listed: true, eosFlag: false, relKey: null, isRepresentative: true }];
+      const vars = g.variations.length > 0 ? g.variations : [{ variationNo: 1, listed: true, eosFlag: false, relKey: null, isRepresentative: true, imageName: null }];
       for (const v of vars) {
         // 範囲展開の起点は代表行(なければ商品の先頭行)
         if (v.isRepresentative) repIndex.set(g.productCode, sheet.length);
-        sheet.push({ code: g.productCode, relKey: v.relKey ?? "", listed: v.listed, eos: v.eosFlag });
+        sheet.push({ code: g.productCode, relKey: v.relKey ?? "", listed: v.listed, eos: v.eosFlag, img: v.imageName });
       }
       if (!repIndex.has(g.productCode)) {
         repIndex.set(g.productCode, sheet.length - vars.length);
@@ -574,7 +626,7 @@ async function generateRows(f: Filter, onProgress?: ExportProgress) {
       // データ行直後のIDだけ入ったテンプレート行(取込時にID値を記録)を範囲判定用に再現
       const tmplKey = (g.extra as Record<string, unknown> | null)?.plTemplateRelKey;
       if (typeof tmplKey === "string" && tmplKey) {
-        sheet.push({ code: "", relKey: tmplKey, listed: false, eos: false });
+        sheet.push({ code: "", relKey: tmplKey, listed: false, eos: false, img: null });
       }
     }
     const map = new Map<string, PlRelated[]>();
@@ -593,35 +645,48 @@ async function generateRows(f: Filter, onProgress?: ExportProgress) {
         if (r.code === prev) continue; // 掲載済み(連続行)スキップ
         prev = r.code;
         const m = meta.get(r.code);
-        if (m) items.push(m);
+        if (m) items.push(r.img ? { ...m, mainImage: r.img } : m);
       }
       map.set(code, items);
     }
     setPlRelated(map);
+    // CFの独自コメント(13)用: 画像の縦横px(現行 CheckImageInfo)を対象商品分まとめてロード
+    const cfImgNames = [...new Set(products.flatMap((p) => cfImageFileNames(p)))];
+    const cfImgRows = cfImgNames.length
+      ? await prisma.imageFile.findMany({ where: { fileName: { in: cfImgNames } } })
+      : [];
+    setCfImageSizes(new Map(cfImgRows.map((r) => [r.fileName, { width: r.width, height: r.height }])));
   }
 
-  const header = channel.fieldMaps.map((m) => m.outputHeader);
   // futureshopの商品CSVは現行仕様どおり商品単位1行(バリエーションは別CSV群で表現)。他連携先はSKU単位
   const perProduct = channel.code === "futureshop";
+  // futureshopは商品登録フラグ○の行がある商品のみ(現行の「登録フラグ○の行だけ処理」)
+  const targets = perProduct ? products.filter((p) => p.variations.some((v) => v.listed)) : products;
+  // CFブック版のFS_ccGoodsシートには「商品URL」列が無い(PL版のみ112列)。CF商品だけの出力では外す
+  const fieldMaps =
+    perProduct && targets.length > 0 && !targets.some(isPL)
+      ? channel.fieldMaps.filter((m) => m.outputHeader !== "商品URL")
+      : channel.fieldMaps;
+  const header = fieldMaps.map((m) => m.outputHeader);
   const rows: string[][] = [];
   let done = 0;
-  onProgress?.("生成中", 0, products.length);
-  for (const p of products) {
+  onProgress?.("生成中", 0, targets.length);
+  for (const p of targets) {
     const targets = perProduct
       ? [p.variations.find((v) => v.isRepresentative) ?? p.variations[0]]
       : p.variations;
     for (const v of targets) {
       if (!v) continue;
-      rows.push(channel.fieldMaps.map((m) => resolveExpr(m.sourceExpr, p, v, channel)));
+      rows.push(fieldMaps.map((m) => resolveExpr(m.sourceExpr, p, v, channel)));
     }
     done++;
     if (done % 100 === 0) {
-      onProgress?.("生成中", done, products.length);
+      onProgress?.("生成中", done, targets.length);
       // 進捗ポーリングに応答できるようイベントループへ譲る
       await new Promise((r) => setImmediate(r));
     }
   }
-  onProgress?.("生成中", products.length, products.length);
+  onProgress?.("生成中", targets.length, targets.length);
   return { channel, header, rows };
 }
 
@@ -636,17 +701,15 @@ function parseFilter(req: Request): Filter {
 async function handlePreview(req: Request, res: Response, next: NextFunction) {
   try {
     const f = parseFilter(req);
-    const { channel, header, rows } = await generateRows(f);
+    const result = await generateRows(f);
+    const { channel, header, rows } = result;
     res.json({
       channel: { code: channel.code, name: channel.name, charset: channel.charset },
       header,
       rows: rows.slice(0, 5),
       total: rows.length,
-      // 分割目安: サブCSVは種別ごとの件数(999/カテゴリ5000)、商品CSVはchannels.split_rows
-      splitRows:
-        f.fileType && f.fileType !== "products"
-          ? (FS_SUB_SPLIT_ROWS[f.fileType as FsSubFileType] ?? channel.splitRows)
-          : channel.splitRows,
+      // 分割目安: サブCSVは種別ごとの件数(PL/CFで異なる。subMeta)、商品CSVはchannels.split_rows
+      splitRows: subMetaOf(result)?.splitRows ?? channel.splitRows,
     });
   } catch (e) {
     next(e);
@@ -659,7 +722,8 @@ exportsRouter.post("/preview", handlePreview);
 async function handleCsv(req: Request, res: Response, next: NextFunction) {
   try {
     const f = parseFilter(req);
-    const { channel, header, rows } = await generateRows(f);
+    const result = await generateRows(f);
+    const { channel, header, rows } = result;
 
     const text =
       [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join(
@@ -671,9 +735,10 @@ async function handleCsv(req: Request, res: Response, next: NextFunction) {
       .replace(/[-: ]/g, "")
       .slice(0, 12);
     // 日本語ファイル名はHTTPヘッダに直接入れられないためRFC5987(filename*)で渡す
-    const isSub = f.fileType && f.fileType !== "products";
-    const filename = isSub
-      ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}.csv`
+    const meta = subMetaOf(result);
+    const isSub = !!meta;
+    const filename = meta
+      ? `${meta.fileBase}_${stamp}.csv`
       : `${channel.code}_products_${stamp}.csv`;
     const asciiName = isSub ? `fs_${f.fileType}_${stamp}.csv` : filename;
     const dispo = `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
@@ -735,14 +800,20 @@ const FS_SET_TYPES: Record<string, { members: FsSubFileType[]; zipName: string }
 };
 
 // サブCSVの分割件数は種別ごとにFS_SUB_SPLIT_ROWS(999/カテゴリ5000)。商品CSVはchannels.split_rows=700
+// CF(シーリングファン)のサブCSVはFS_CF_SUB_SPLIT_ROWS。generateRowsが返すsubMeta(ファイル名・分割件数)を使う
+// CFのバリエーションセットは価格CSVなし(現行CFは選択肢登録・詳細登録・在庫の3種)。ZIP名もPL_接頭辞なし
+type GenerateResult = Awaited<ReturnType<typeof generateRows>>;
+function subMetaOf(r: GenerateResult): { book: "PL" | "CF"; fileBase: string; splitRows: number } | undefined {
+  return "subMeta" in r ? r.subMeta : undefined;
+}
 
-function buildCsvText(header: string[], rows: string[][]): string {
+export function buildCsvText(header: string[], rows: string[][]): string {
   return (
     [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join("\r\n") +
     "\r\n"
   );
 }
-function encodeCsv(sjis: boolean, text: string): Buffer {
+export function encodeCsv(sjis: boolean, text: string): Buffer {
   return sjis ? iconv.encode(text, "Shift_JIS") : Buffer.from("\uFEFF" + text, "utf8");
 }
 // 分割: limit超過時のみ分割し、各ファイルにヘッダー行を付ける(現行のSaveCopySheetFutureShopCSVと同じ)
@@ -768,10 +839,12 @@ async function runExportJob(job: ExportJob, f: Filter) {
     if (set) {
       // セット出力: メンバーごとにCSVを生成し(999行分割込み)ZIPにまとめる(現行のExcelボタン1回分)
       const zip = new JSZip();
+      let book: "PL" | "CF" | undefined;
       for (let mi = 0; mi < set.members.length; mi++) {
         const member = set.members[mi];
+        if (member === "variation_price" && book === "CF") continue;
         const label = FS_SUB_FILE_NAMES[member];
-        const { channel, header, rows } = await generateRows(
+        const result = await generateRows(
           { ...f, fileType: member },
           (phase, processed, total) => {
             job.phase = `${label} (${mi + 1}/${set.members.length}) ${phase}`;
@@ -779,8 +852,11 @@ async function runExportJob(job: ExportJob, f: Filter) {
             job.total = total;
           }
         );
-        const chunks = splitRowChunks(rows, FS_SUB_SPLIT_ROWS[member]);
-        const names = chunkFileNames(`${label}_${stamp}`, chunks.length);
+        const { channel, header, rows } = result;
+        const meta = subMetaOf(result);
+        book = meta?.book;
+        const chunks = splitRowChunks(rows, meta?.splitRows ?? FS_SUB_SPLIT_ROWS[member]);
+        const names = chunkFileNames(`${meta?.fileBase ?? label}_${stamp}`, chunks.length);
         chunks.forEach((chunk, i) => {
           zip.file(names[i], encodeCsv(channel.charset === "SHIFT_JIS", buildCsvText(header, chunk)));
         });
@@ -789,24 +865,25 @@ async function runExportJob(job: ExportJob, f: Filter) {
       job.phase = "ファイル作成中";
       job.body = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
       job.contentType = "application/zip";
-      job.filename = `${set.zipName}_${stamp}.zip`;
+      job.filename = `${book === "CF" ? set.zipName.replace(/^PL_/, "") : set.zipName}_${stamp}.zip`;
       job.status = "DONE";
       job.phase = "完了";
       return;
     }
-    const { channel, header, rows } = await generateRows(f, (phase, processed, total) => {
+    const result = await generateRows(f, (phase, processed, total) => {
       job.phase = phase;
       job.processed = processed;
       job.total = total;
     });
+    const { channel, header, rows } = result;
+    const meta = subMetaOf(result);
     job.phase = "ファイル作成中";
     await new Promise((r) => setImmediate(r));
-    const isSub = f.fileType && f.fileType !== "products";
-    const base = isSub
-      ? `${FS_SUB_FILE_NAMES[f.fileType as FsSubFileType]}_${stamp}`
+    const base = meta
+      ? `${meta.fileBase}_${stamp}`
       : `${channel.code}_products_${stamp}`;
-    // 分割件数: 商品CSV=channels.split_rows(futureshop 700) / サブCSV=種別ごと(999、カテゴリ5000)
-    const limit = isSub ? FS_SUB_SPLIT_ROWS[f.fileType as FsSubFileType] : channel.splitRows;
+    // 分割件数: 商品CSV=channels.split_rows(futureshop 700) / サブCSV=種別ごと(subMeta。PL 999・カテゴリ5000、CFはタグ5000・画像ALT2000等)
+    const limit = meta ? meta.splitRows : channel.splitRows;
     const chunks = splitRowChunks(rows, limit);
     const sjis = channel.charset === "SHIFT_JIS";
     if (chunks.length === 1) {
