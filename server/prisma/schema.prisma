@@ -401,6 +401,10 @@ model ProductVariation {
   warrantyFlag     String? @map("warranty_flag") // 行のfazoo延長保証(○。FSタブ内アイコン用)
   shape            String? // 行のカテゴリ(形)(FSタブ内アイコン用)
   installEdw       String? @map("install_edw") // 行の取付方法E/D/W(FSタブ内アイコン用)
+  backorder        Boolean @default(false) // 行の入荷待ち(PLのD列○)。FSバリエーション在庫を0にする
+  rowName          String? @map("row_name") // 行のイメージ名(生値)。FS商品名(行単位)に使用
+  rowDisplayModel  String? @map("row_display_model") // 行の掲載用型番(生値)。FS商品名(行単位)に使用
+  rowInstallType   String? @map("row_install_type") // 行の取付タイプ(簡易取付等)。FS商品名(行単位)に使用
 
   channelLinks ProductChannelLink[]
 
@@ -446,6 +450,17 @@ model ProductImage {
 
   @@index([productId, imageType])
   @@map("product_images")
+}
+
+// 画像ファイルの実寸(px)。FS独自コメントのimgタグ width/height に使用(現行VBAのCheckImageInfo相当)。
+// 同じ画像を複数商品で共有し、商品画像は取込のたびに作り直されるためファイル名単位で持つ
+model ImageFile {
+  fileName  String   @id @map("file_name")
+  width     Int
+  height    Int
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("image_files")
 }
 
 // ============================================================

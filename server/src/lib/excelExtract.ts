@@ -84,6 +84,8 @@ function sheetRows(wb: XLSX.WorkBook, name: string): Row[] {
 // ---------- ペンダントライト（.xlsm） ----------
 
 const PL_SHEET = "ペンダントライト一覧";
+// 同じ列構成の別管理シート(オプション・ライティングレール部材等)。FS出力は同じマクロで行う
+const PL_OTHER_SHEET = "その他別管理一覧FS";
 
 const PL_IMAGE_COLS: Array<[number, string, number]> = [
   [99, "MAIN", 2],
@@ -92,8 +94,9 @@ const PL_IMAGE_COLS: Array<[number, string, number]> = [
   [119, "FUNCTION", 6],
 ];
 
-function plStatus(row: Row): string {
-  if (s(row[145])) return "HIDDEN"; // データ削除
+function plStatus(row: Row, sheetName: string): string {
+  // データ削除列はメインシートのみ(その他別管理一覧FSの同じ列は別の用途)
+  if (sheetName === PL_SHEET && s(row[145])) return "HIDDEN";
   const end = s(row[4]); // 販売終了 ○終了 / △終了在庫有
   if (end === "○") return "DISCONTINUED";
   if (end === "△") return "DISCONTINUED_IN_STOCK";
@@ -102,45 +105,51 @@ function plStatus(row: Row): string {
 }
 
 export function extractPl(wb: XLSX.WorkBook): ExtractResult {
-  const rows = sheetRows(wb, PL_SHEET);
   const makers = new Map<string, MakerJson>();
-  const groups = new Map<string, { parent: Row | null; children: Row[] }>();
+  const groups = new Map<string, { parent: Row | null; children: Row[]; sheet: string }>();
 
   // データ行の直後にID(メーカー記号+通番)だけ数式で埋まったテンプレート行が続く箇所がある。
   // 現行VBAの関連商品(独自コメント(8))はこの行も範囲判定に含むため、直前の商品にそのID値を記録して再現する
   const templateFollows = new Map<string, string>();
-  let lastParentCode: string | null = null;
-  for (let ri = 3; ri < rows.length; ri++) {
-    const row: Row = [...(rows[ri] ?? [])];
-    row.length = Math.max(row.length, 170);
-    const sku = s(row[18]); // fazoo管理型番(ユニーク)
-    const parentCode = s(row[16]); // fazoo管理型番 親
-    if (!sku || !parentCode) {
-      if (s(row[7]) && s(row[9]) && lastParentCode && !templateFollows.has(lastParentCode)) {
-        templateFollows.set(lastParentCode, `${s(row[7])}${s(row[9])}`);
+  const sheets = [PL_SHEET, ...(wb.SheetNames.includes(PL_OTHER_SHEET) ? [PL_OTHER_SHEET] : [])];
+  // シートごとのA1セル(Variationモード/Optionモード)。FS商品CSVの在庫管理・現在在庫数が切り替わる
+  const sheetModes = new Map<string, string | null>();
+  for (const sheetName of sheets) {
+    const rows = sheetRows(wb, sheetName);
+    sheetModes.set(sheetName, s(rows[0]?.[0]));
+    let lastParentCode: string | null = null;
+    for (let ri = 3; ri < rows.length; ri++) {
+      const row: Row = [...(rows[ri] ?? [])];
+      row.length = Math.max(row.length, 170);
+      const sku = s(row[18]); // fazoo管理型番(ユニーク)
+      const parentCode = s(row[16]); // fazoo管理型番 親
+      if (!sku || !parentCode) {
+        if (s(row[7]) && s(row[9]) && lastParentCode && !templateFollows.has(lastParentCode)) {
+          templateFollows.set(lastParentCode, `${s(row[7])}${s(row[9])}`);
+        }
+        continue;
       }
-      continue;
-    }
-    lastParentCode = parentCode;
-    const makerCode = s(row[7]);
-    if (makerCode && !makers.has(makerCode)) {
-      makers.set(makerCode, {
-        makerCode,
-        nameJp: s(row[20]) ?? makerCode,
-        nameEn: s(row[21]),
-        imgFolder: s(row[131]),
-      });
-    }
-    let g = groups.get(parentCode);
-    if (!g) {
-      g = { parent: null, children: [] };
-      groups.set(parentCode, g);
-    }
-    const kind = s(row[15]); // 単品 / 親バリエーション / 子バリエーション
-    if ((kind === "単品" || kind === "親バリエーション") && g.parent === null) {
-      g.parent = row;
-    } else {
-      g.children.push(row);
+      lastParentCode = parentCode;
+      const makerCode = s(row[7]);
+      if (makerCode && !makers.has(makerCode)) {
+        makers.set(makerCode, {
+          makerCode,
+          nameJp: s(row[20]) ?? makerCode,
+          nameEn: s(row[21]),
+          imgFolder: s(row[131]),
+        });
+      }
+      let g = groups.get(parentCode);
+      if (!g) {
+        g = { parent: null, children: [], sheet: sheetName };
+        groups.set(parentCode, g);
+      }
+      const kind = s(row[15]); // 単品 / 親バリエーション / 子バリエーション
+      if ((kind === "単品" || kind === "親バリエーション") && g.parent === null) {
+        g.parent = row;
+      } else {
+        g.children.push(row);
+      }
     }
   }
 
@@ -214,6 +223,11 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         installEdw: s(r[12]), // 行の取付方法E/D/W
         mainBulbCount: numInt(r[60]), // 行ごとのメイン電球数(タブ内アイコン用)
         listed: s(r[0]) === "○", // 行の登録フラグ(FSページ名等の型番連結対象)
+        backorder: s(r[3]) === "○", // 行の入荷待ち(FSバリエーション在庫0)
+        rowName: rawS(r[82]), // 行のイメージ名(FS商品名は行単位で組み立てる)
+        rowDisplayModel: rawS(r[23]), // 行の掲載用型番
+        rowInstallType: s(r[14]), // 行の取付タイプ
+        imageName: s(r[99]), // 行のメイン画像1(FS関連商品(独自コメント(8))は範囲内の行の画像を使う)
       });
     }
 
@@ -234,13 +248,13 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
       seriesCode: s(p[10]),
       genreCode: s(p[12]),
       seqNo: numInt(p[9]),
-      name: rawS(p[82]) ?? s(p[23]) ?? parentCode, // イメージ名は末尾スペースも現行出力に効くため生値
+      name: rawS(p[82]) ?? rawS(p[23]) ?? parentCode, // イメージ名は末尾スペースも現行出力に効くため生値
       summary: s(p[22]),
       modelNumber: rawS(p[24]), // 掲載用型番との一致判定(商品名)は生値同士で行う
       displayModelNumber: rawS(p[23]), // 掲載用型番(末尾スペース保持)
       warranty: s(p[128]), // 3年保証(○)。FSアイコン・レイアウト割当名に使用
       janCode: s(p[91]),
-      status: plStatus(p),
+      status: plStatus(p, g.sheet),
       statusNote: s(p[5]),
       successorModel: rawS(p[133]), // 後継機種リンクのkeywordに生値が入る
       releaseDate: isoDate(p[90]),
@@ -256,7 +270,7 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
       weightKg: numFloat(p[53]),
       totalHeightMinMm: numInt(p[54]),
       totalHeightMaxMm: numInt(p[55]),
-      bodyColor: s(p[80]) ?? s(p[13]),
+      bodyColor: rawS(p[80]) ?? s(p[13]), // メイン色(生値。FS独自コメント(6)のカラー行に末尾スペースも出る)
       comment: rawS(p[92]),
       detail: s(p[93]),
       descriptions: descriptions.length > 0 ? descriptions : null,
@@ -271,6 +285,12 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         manualKeywords: s(p[130]),
         attachableCount: numInt(p[157]),
         plTemplateRelKey: templateFollows.get(parentCode),
+        itemType: s(p[6]), // 商品種別(PL/CL/CF/LR/AC/OP)。FS商品名の「製○○」の語尾に使う
+        sheet: g.sheet === PL_OTHER_SHEET ? "other" : undefined, // その他別管理一覧FSの商品
+        sheetMode: sheetModes.get(g.sheet), // シートのA1セル(Variationモード/Optionモード)
+        opCategory: s(p[132]), // その他管理用カテゴリ1(その他シートのFS画像ALT・タグ表示に使う。例: オプション部品)
+        // 幅/奥行/高さ/全高min/maxの生値(小数あり。widthMm等はIntで丸まるためFS独自コメント(6)の表記に使う)
+        sizeText: { width: s(p[50]), depth: s(p[51]), height: s(p[52]), totalMin: s(p[54]), totalMax: s(p[55]) },
       },
       lightingAttrs: {
         bulbType: s(p[75]),
@@ -335,19 +355,21 @@ const CF_SET_MODEL_COLS: Array<[number, string]> = [
   [28, "OPTION"],
 ];
 
+// 実シートは110列目(0始まり)に「ダクトレール取り付け」が挿入されており、VBAの INPUT_COL 定数(Common.bas)より
+// 以降の列が1つ右にずれている。ここでは実シートの位置で指定する
 const CF_IMAGE_COLS: Array<[number, string, number]> = [
-  [111, "MAIN", 1],
-  [112, "MAIN", 2],
-  ...Array.from({ length: 10 }, (_, i) => [118 + i, "IMAGE", i + 1] as [number, string, number]),
-  [128, "SIZE", 1],
-  [129, "SIZE", 2],
-  ...Array.from({ length: 3 }, (_, i) => [130 + i, "FUNCTION", i + 1] as [number, string, number]),
-  [133, "REMOTE", 1],
-  [134, "ACCESSORY", 1],
-  ...Array.from({ length: 4 }, (_, i) => [135 + i, "LIST", i + 1] as [number, string, number]),
-  [139, "AD", 1],
-  [140, "AD", 2],
-  [141, "ORIGINAL", 1],
+  [112, "MAIN", 1],
+  [113, "MAIN", 2],
+  ...Array.from({ length: 10 }, (_, i) => [119 + i, "IMAGE", i + 1] as [number, string, number]),
+  [129, "SIZE", 1],
+  [130, "SIZE", 2],
+  ...Array.from({ length: 3 }, (_, i) => [131 + i, "FUNCTION", i + 1] as [number, string, number]),
+  [134, "REMOTE", 1],
+  [135, "ACCESSORY", 1],
+  ...Array.from({ length: 4 }, (_, i) => [136 + i, "LIST", i + 1] as [number, string, number]),
+  [140, "AD", 1],
+  [141, "AD", 2],
+  [142, "ORIGINAL", 1],
 ];
 
 function cfStatus(row: Row): string {
@@ -390,11 +412,12 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
       const fn = s(row[col]);
       if (fn) images.push({ imageType, sortNo, fileName: fn });
     }
-    if (s(row[113])) images.push({ imageType: "FEATURE", sortNo: 1, fileName: s(row[113]) });
-    if (s(row[114])) images.push({ imageType: "FEATURE", sortNo: 2, fileName: s(row[114]) });
+    if (s(row[114])) images.push({ imageType: "FEATURE", sortNo: 1, fileName: s(row[114]) });
+    if (s(row[115])) images.push({ imageType: "FEATURE", sortNo: 2, fileName: s(row[115]) });
 
     const variations: Array<Record<string, unknown>> = [];
     const axis = s(row[93]);
+    const listed = s(row[0]) === "○"; // 商品登録フラグ(FS出力対象は○行のみ)
     for (let i = 0; i < 3; i++) {
       const vmodel = s(row[29 + i]);
       const opt = s(row[94 + i]);
@@ -408,6 +431,7 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
           isRepresentative: i === 0,
           additionalLeadTime: s(row[99 + i]),
           imageName: i === 0 ? s(row[102]) : null,
+          listed,
         });
       }
     }
@@ -417,6 +441,7 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         skuCode: `${code}v1`,
         modelNumber: s(row[21]) ?? s(row[20]),
         isRepresentative: true,
+        listed,
       });
     }
 
@@ -473,8 +498,8 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
       detail: s(row[86]),
       descriptions: descriptions.length > 0 ? descriptions : null,
       videoHtmls:
-        s(row[115]) || s(row[116]) || s(row[117])
-          ? { fs: s(row[115]), yahoo: s(row[116]), rakuten: s(row[117]) }
+        s(row[116]) || s(row[117]) || s(row[118])
+          ? { fs: s(row[116]), yahoo: s(row[117]), rakuten: s(row[118]) }
           : null,
       isNew: s(row[88]) === "Y",
       isRecommended: flag(row[89]),
@@ -484,15 +509,15 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
       shippingLeadTime: s(row[98]),
       fsShippingPattern: s(row[97]),
       relatedProducts: s(row[92]),
-      exampleUrl: s(row[142]),
+      exampleUrl: s(row[143]),
       memo: s(row[5]) ?? s(row[103]),
       extra: {
         priority: s(row[1]),
         amazonDeleteFlag: s(row[4]),
         denaPrice: numInt(row[48]),
-        yahooListPriceUrl: s(row[143]),
-        series: s(row[147]),
-        singleFlag: s(row[145]),
+        yahooListPriceUrl: s(row[144]),
+        series: s(row[148]),
+        singleFlag: s(row[146]),
         cfVariationModels: [s(row[29]), s(row[30]), s(row[31])], // 型番_バリエーション1〜3の生セル(型番連結用)
         identNo: numInt(row[9]), // 識別番号(1:予約 2:セール 3:入荷予定)
         arrivalText: s(row[6]), // 入荷待ち文言(納期バナー用)
@@ -500,6 +525,35 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         moneyBack90: s(row[81]), // 90日返金保証("なし"でバナー表示)
         makerCellName: s(row[16]), // メーカー名セル(EEメーカーの表記用)
         windVolumeRaw: s(row[58]), // 風量セル生値("large1"=大風量判定用)
+        nameId: s(row[17]), // 商品名ID(FS商品名の【】内。空なら商品コード)
+        janRaw: rawS(row[37]), // JANコードセル生値(FSは先頭13文字を全角化。先頭スペースも保持)
+        productNameRaw: rawS(row[19]), // 商品名セル生値(FS商品名に使用)
+        // 幅・高さ・重量の生数値(小数誤差込み。7.000000000000001kg は軽量(7以下)にならない等、FS商品名の判定に効く)
+        widthRaw: numFloat(row[32]),
+        heightRaw: numFloat(row[33]),
+        weightRaw: numFloat(row[36]),
+        // 独自コメント(4)(12)〜(14)用の生セル(fsCfComments.ts)。数値型/文字列型の区別(VBAのVarType判定)も保持
+        // 実シートは111列目に「ダクトレール取り付け」が挿入され、以降が Common.bas の INPUT_COL より1列右にずれている
+        cfImageCells: Array.from({ length: 24 }, (_, i) => rawS(row[112 + i])), // 画像データM1〜E1(列順そのまま)
+        ductRailRaw: s(row[110]), // ダクトレール取り付け(取付6相当)
+        exampleUrlRaw: s(row[143]), // 事例写真リンクURL
+        subIntro1Raw: rawS(row[86]), // サブ紹介文1(末尾改行込み)
+        subIndividualCell: typeof row[85] === "string" && row[85] !== "" ? row[85] : null, // サブ紹介文_個別(空白のみも「入力あり」扱い)
+        windSpeedCell: typeof row[57] === "number" || typeof row[57] === "string" ? row[57] : null, // 風速
+        windVolumeCell: typeof row[58] === "number" || typeof row[58] === "string" ? row[58] : null, // 風量
+        pipeLengthCell: typeof row[61] === "number" || typeof row[61] === "string" ? row[61] : null, // 延長パイプ
+        rhythmRaw: s(row[70]), // リズム("あり")
+        remoteRaw: s(row[72]), // リモコン有無(あり/1ch/2ch/3ch/プルSW)
+        wattRaw: numFloat(row[75]), // 明るさW相当
+        lumenRaw: numFloat(row[76]), // ルーメン
+        tatamiToRaw: numFloat(row[78]), // 照度n畳まで(4.5/5.9 等の小数あり)
+        angledRaw: typeof row[79] === "number" || typeof row[79] === "string" ? row[79] : null, // 斜め取り付け可否
+        variationAxisRaw: s(row[93]), // バリエーション1項目名
+        variationOptsRaw: [s(row[94]), s(row[95]), s(row[96])], // バリエーション1選択肢1〜3
+        variationImageRaw: s(row[102]), // バリエーション画像データ(電球色選択ブロック)
+        // FS商品画像ALT用: 画像データM1・M2の生セル。実シートは111列目に「ダクトレール取り付け」が挿入されており、
+        // M1/M2 は113/114列目(Common.bas の INPUT_COL画像データM1=112 より1列右)。ヘッダー名で確認済み
+        fsMainImageCells: [rawS(row[112]), rawS(row[113])],
       },
       channelPrices: amazonPrice ? [{ channelCode: "amazon", price: amazonPrice }] : [],
       fanAttrs: {
@@ -538,7 +592,8 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
           rosette2: s(row[107]),
           boltFixing: s(row[108]),
           other: s(row[109]),
-          note: s(row[110]),
+          ductRail: s(row[110]), // ダクトレール取り付け(実シートで追加された列)
+          note: s(row[111]),
         },
       },
       images,

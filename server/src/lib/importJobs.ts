@@ -96,6 +96,11 @@ export async function listJobs(): Promise<ImportJob[]> {
   return rows.map((row) => jobs.get(row.id) ?? rowToJob(row));
 }
 
+// PLブックの商品コードは「XX-9999…」形式、CFブックは「XXX999」形式
+function isPlBookCode(code: string): boolean {
+  return /^[A-Z]+-\d/.test(code);
+}
+
 function clean(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
 }
@@ -180,6 +185,13 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
         });
       }
 
+      // シートから消えた行(SKU)は削除する(残すとバリエーションCSVに旧行が出る・枝番の一意制約に当たる)
+      await prisma.productVariation.deleteMany({
+        where: {
+          productId: product.id,
+          skuCode: { notIn: variations.map((v) => v.skuCode as string) },
+        },
+      });
       for (const v of variations) {
         const vData = clean(v) as Prisma.ProductVariationUncheckedCreateInput;
         await prisma.productVariation.upsert({
@@ -220,18 +232,20 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
     if (job.processed % 200 === 0) await persistJob(job); // 途中経過も定期的に保存
   }
 
-  // 全入れ替え: 取り込んだ種別のうち、ファイルに無い既存商品を論理削除
+  // 全入れ替え: 取り込んだブックの商品のうち、ファイルに無い既存商品を論理削除。
+  // PLブックにもシーリングファン区分の商品があるため、カテゴリではなく商品コード形式(ブック)で範囲を決める
   if (job.mode === "replace") {
-    const importedCodes = products.map((p) => p.productCode);
-    const importedCategories = [...new Set(products.map((p) => p.category))] as Array<
-      "PENDANT_LIGHT" | "CEILING_LIGHT" | "CEILING_FAN" | "OTHER"
-    >;
+    const importedCodes = new Set(products.map((p) => p.productCode));
+    const live = await prisma.product.findMany({
+      where: { deletedAt: null },
+      select: { id: true, productCode: true },
+    });
+    const staleIds = live
+      .filter((p) => isPlBookCode(p.productCode) === (bookType === "PL"))
+      .filter((p) => !importedCodes.has(p.productCode))
+      .map((p) => p.id);
     const result = await prisma.product.updateMany({
-      where: {
-        category: { in: importedCategories },
-        productCode: { notIn: importedCodes },
-        deletedAt: null,
-      },
+      where: { id: { in: staleIds } },
       data: { deletedAt: new Date() },
     });
     job.softDeleted = result.count;
