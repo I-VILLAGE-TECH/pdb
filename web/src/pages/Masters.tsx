@@ -1,19 +1,40 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Maker } from "../lib/api";
+import { LoadingArea, useLoading } from "../components/Loading";
 import { Modal } from "../components/filters";
 
 // ---- メーカーマスタ（項目マスタと同じUI: 一覧＋モーダルで追加・編集） ----
+
+// シーリングファン(CF)の出力で使う用途別の表記(現行マクロ Setメーカー名 の区分)。区分1=和名・6=英字名は上の欄を使う
+const CF_NOTATION_FIELDS: Array<{ key: string; label: string; example: string }> = [
+  { key: "2", label: "英字＋(日本語)", example: "ODELIC(オーデリック)" },
+  { key: "3", label: "カテゴリ用", example: "オーデリック／ODELIC" },
+  { key: "4", label: "画像フォルダ", example: "odelic" },
+  { key: "5", label: "隠しキーワード", example: ";MO" },
+  { key: "7", label: "ブランド名", example: "ODELIC" },
+  { key: "8", label: "Description用(〜製)", example: "オーデリック／ODELIC製" },
+  { key: "9", label: "FS用(旧メイングループ)", example: "オーデリック／ODELIC" },
+  { key: "10", label: "FSメイングループ・カテゴリ用", example: "オーデリック／ODELIC" },
+  { key: "11", label: "FS商品URL", example: "//www.fazoo.biz/c/odelic/" },
+  { key: "12", label: "ロゴ画像(ファイル名\" alt=\"…)", example: 'odelic_logo.gif" alt="オーデリックのメーカーロゴ' },
+  { key: "13", label: "Yahooカテゴリ用", example: "オーデリック" },
+  { key: "14", label: "Yahooブランドコード", example: "491" },
+  { key: "15", label: "ロゴ画像サイズ", example: 'width="150" height="36"' },
+  { key: "16", label: "FS検索キーワード(末尾カンマ)", example: "ODELIC,オーデリック," },
+];
 
 function MakersPanel({ onError }: { onError: (m: string) => void }) {
   const [makers, setMakers] = useState<Maker[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [editMaker, setEditMaker] = useState<Maker | null>(null);
   const [form, setForm] = useState({ makerCode: "", nameJp: "", nameEn: "", imgFolder: "" });
+  const [cfNotations, setCfNotations] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
+  const { loading, since, track } = useLoading();
   const load = useCallback(() => {
-    api<Maker[]>("/api/makers").then(setMakers).catch((e) => onError(e.message));
-  }, [onError]);
+    track(api<Maker[]>("/api/makers")).then(setMakers).catch((e) => onError(e.message));
+  }, [onError, track]);
 
   useEffect(() => {
     load();
@@ -21,6 +42,7 @@ function MakersPanel({ onError }: { onError: (m: string) => void }) {
 
   function openAdd() {
     setForm({ makerCode: "", nameJp: "", nameEn: "", imgFolder: "" });
+    setCfNotations({});
     setShowAdd(true);
   }
 
@@ -31,6 +53,7 @@ function MakersPanel({ onError }: { onError: (m: string) => void }) {
       nameEn: m.nameEn ?? "",
       imgFolder: m.imgFolder ?? "",
     });
+    setCfNotations({ ...(m.cfNotations ?? {}) });
     setEditMaker(m);
   }
 
@@ -43,6 +66,7 @@ function MakersPanel({ onError }: { onError: (m: string) => void }) {
         nameJp: form.nameJp,
         nameEn: form.nameEn || null,
         imgFolder: form.imgFolder || null,
+        cfNotations: Object.values(cfNotations).some((v) => v) ? cfNotations : null,
       };
       if (editMaker) {
         await api(`/api/makers/${editMaker.id}`, { method: "PUT", body: JSON.stringify(payload) });
@@ -65,37 +89,50 @@ function MakersPanel({ onError }: { onError: (m: string) => void }) {
 
   return (
     <>
+      <div className="notice">
+        <b>注意:</b> メーカー名などを変更すると、連携先CSV(futureshop の商品名・ページ名・並び順、Yahoo・Amazon の商品名など)の内容が変わります。
+        現在は Excel が入力の正のため、Excel側と合わせて変更してください。
+        シーリングファン(CF)の連携先CSVも、ここのメーカー名・英字名と「シーリングファン(CF)用の表記」を使います(画面の内容が正。デプロイで上書きされることはありません)。
+      </div>
       <div className="toolbar">
         <button className="primary" onClick={openAdd}>
           ＋ メーカーを追加
         </button>
       </div>
-      <table style={{ maxWidth: 900 }}>
-        <thead>
-          <tr>
-            <th style={{ width: 90 }}>コード</th>
-            <th>メーカー名</th>
-            <th>英字名</th>
-            <th>画像フォルダ</th>
-            <th style={{ width: 90 }}>商品数</th>
-            <th style={{ width: 80 }}>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {makers.map((m) => (
-            <tr key={m.id}>
-              <td>{m.makerCode}</td>
-              <td>{m.nameJp}</td>
-              <td>{m.nameEn ?? "-"}</td>
-              <td>{m.imgFolder ?? "-"}</td>
-              <td className="num">{m._count?.products ?? 0}</td>
-              <td>
-                <button onClick={() => openEdit(m)}>編集</button>
-              </td>
+      <LoadingArea loading={loading} since={since} hasData={makers.length > 0} message="メーカーを読み込んでいます">
+        <table style={{ maxWidth: 900 }}>
+          <thead>
+            <tr>
+              <th style={{ width: 90 }}>コード</th>
+              <th>メーカー名</th>
+              <th>英字名</th>
+              <th>画像フォルダ</th>
+              <th style={{ width: 110 }}>CF用表記</th>
+              <th style={{ width: 90 }}>商品数</th>
+              <th style={{ width: 80 }}>操作</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {makers.map((m) => (
+              <tr key={m.id}>
+                <td>{m.makerCode}</td>
+                <td>{m.nameJp}</td>
+                <td>{m.nameEn ?? "-"}</td>
+                <td>{m.imgFolder ?? "-"}</td>
+                <td className="muted">
+                  {m.cfNotations && Object.keys(m.cfNotations).length > 0
+                    ? `${Object.keys(m.cfNotations).length} 項目`
+                    : "-"}
+                </td>
+                <td className="num">{m._count?.products ?? 0}</td>
+                <td>
+                  <button onClick={() => openEdit(m)}>編集</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </LoadingArea>
 
       {modalOpen && (
         <Modal
@@ -145,6 +182,29 @@ function MakersPanel({ onError }: { onError: (m: string) => void }) {
                 style={{ width: "100%" }}
               />
             </div>
+            <details style={{ marginTop: 8 }} open={Object.keys(cfNotations).length > 0}>
+              <summary style={{ cursor: "pointer" }}>シーリングファン(CF)用の表記</summary>
+              <p className="muted" style={{ fontSize: 12 }}>
+                シーリングファンの連携先CSV(futureshop・Yahoo・Amazon)で用途ごとに使う表記です。和名・英字名は上の欄を使います。
+                空欄の項目はCSVでも空になります。
+              </p>
+              {CF_NOTATION_FIELDS.map((f) => (
+                <div className="field" key={f.key}>
+                  <label>
+                    {f.label}
+                    <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                      区分{f.key}
+                    </span>
+                  </label>
+                  <input
+                    value={cfNotations[f.key] ?? ""}
+                    placeholder={`例: ${f.example}`}
+                    onChange={(e) => setCfNotations({ ...cfNotations, [f.key]: e.target.value })}
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              ))}
+            </details>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
               <button
                 type="button"
@@ -205,13 +265,14 @@ export function Masters() {
   const [editItem, setEditItem] = useState<MasterItem | null>(null);
   const [editForm, setEditForm] = useState({ value: "", note: "" });
 
+  const { loading, since, track } = useLoading();
   const load = useCallback(() => {
     if (currentType === "maker") return; // メーカータブは MakersPanel が自前で取得
-    api<MasterItem[]>(`/api/masters?type=${currentType}`)
+    track(api<MasterItem[]>(`/api/masters?type=${currentType}`))
       .then(setItems)
       .catch((e) => setError(e.message));
     api<TypeCount[]>("/api/masters/types").then(setCounts).catch(() => {});
-  }, [currentType]);
+  }, [currentType, track]);
 
   useEffect(() => {
     load();
@@ -318,45 +379,50 @@ export function Masters() {
       {currentType === "maker" && <MakersPanel onError={setError} />}
       {currentType !== "maker" && (
       <>
+      <div className="notice">
+        商品の登録・編集画面の選択肢として使います。連携先CSVの出力には使いません。Excel取込では変更されません。
+      </div>
       <div className="toolbar">
         <button className="primary" onClick={openAdd}>
           ＋ {MASTER_TYPE_LABEL[currentType]} を追加
         </button>
       </div>
 
-      <table style={{ maxWidth: 760 }}>
-        <thead>
-          <tr>
-            <th>値</th>
-            <th>メモ</th>
-            <th style={{ width: 70 }}>状態</th>
-            <th style={{ width: 80 }}>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item.id} style={{ opacity: item.active ? 1 : 0.45 }}>
-              <td>{item.value}</td>
-              <td className="muted">{item.note ?? "-"}</td>
-              <td>
-                <span className={`badge ${item.active ? "green" : "red"}`}>
-                  {item.active ? "有効" : "無効"}
-                </span>
-              </td>
-              <td>
-                <button onClick={() => openEdit(item)}>編集</button>
-              </td>
-            </tr>
-          ))}
-          {items.length === 0 && (
+      <LoadingArea loading={loading} since={since} hasData={items.length > 0} message="マスタを読み込んでいます">
+        <table style={{ maxWidth: 760 }}>
+          <thead>
             <tr>
-              <td colSpan={4} className="muted">
-                データがありません
-              </td>
+              <th>値</th>
+              <th>メモ</th>
+              <th style={{ width: 70 }}>状態</th>
+              <th style={{ width: 80 }}>操作</th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {items.map((item) => (
+              <tr key={item.id} style={{ opacity: item.active ? 1 : 0.45 }}>
+                <td>{item.value}</td>
+                <td className="muted">{item.note ?? "-"}</td>
+                <td>
+                  <span className={`badge ${item.active ? "green" : "red"}`}>
+                    {item.active ? "有効" : "無効"}
+                  </span>
+                </td>
+                <td>
+                  <button onClick={() => openEdit(item)}>編集</button>
+                </td>
+              </tr>
+            ))}
+            {items.length === 0 && (
+              <tr>
+                <td colSpan={4} className="muted">
+                  データがありません
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </LoadingArea>
 
       {showAdd && (
         <Modal

@@ -3,7 +3,7 @@
 // Shopserve用.bas の共通関数: 商品名 / Set小型軽量傾斜等 / Set型番連結 / 商品ページキーワード / 並び順番号 等)を再現する。
 // シートのセル値は取込済みの項目(products / product_fan_attrs / set_components / extra)から読む。
 import type { Prisma } from "@prisma/client";
-import { cfMakerName } from "./cfMakerNames.js";
+import { cfMakerNotation } from "./cfMakerNames.js";
 
 type ProductFull = Prisma.ProductGetPayload<{
   include: {
@@ -54,8 +54,9 @@ export function cfHasLightModel(p: ProductFull): boolean {
 function makerCode(p: ProductFull): string {
   return p.maker?.makerCode ?? "";
 }
+// メーカー表記(現行の Setメーカー名)。メーカーマスタ(マスタ管理画面)の値を使う
 export function cfMaker(p: ProductFull, iClass: number): string {
-  return cfMakerName(makerCode(p), iClass, exs(p, "makerCellName") || p.maker?.nameJp);
+  return cfMakerNotation(p.maker, iClass, exs(p, "makerCellName") || p.maker?.nameJp);
 }
 
 // Shift_JIS相当のバイト長(VBAの LenB(StrConv(s, vbFromUnicode)) / LenByte)

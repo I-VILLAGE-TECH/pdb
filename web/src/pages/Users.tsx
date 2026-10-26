@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ROLE_LABEL, type ManagedUser } from "../lib/api";
+import { LoadingArea, useLoading } from "../components/Loading";
 import { useAuth } from "../lib/AuthContext";
 
 export function Users() {
@@ -10,9 +11,10 @@ export function Users() {
   const [form, setForm] = useState({ email: "", name: "", password: "", role: "EDITOR" });
   const [saving, setSaving] = useState(false);
 
+  const { loading, since, track } = useLoading();
   const load = useCallback(() => {
-    api<ManagedUser[]>("/api/users").then(setUsers).catch((e) => setError(e.message));
-  }, []);
+    track(api<ManagedUser[]>("/api/users")).then(setUsers).catch((e) => setError(e.message));
+  }, [track]);
 
   useEffect(() => {
     load();
@@ -96,80 +98,82 @@ export function Users() {
         </form>
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>ID</th>
-            <th>メールアドレス</th>
-            <th>氏名</th>
-            <th>権限</th>
-            <th>状態</th>
-            <th>最終ログイン</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {users.map((u) => {
-            const isSelf = u.id === me?.id;
-            return (
-              <tr key={u.id} style={{ opacity: u.active ? 1 : 0.5 }}>
-                <td>{u.id}</td>
-                <td>
-                  {u.email}
-                  {isSelf && <span className="badge" style={{ marginLeft: 6 }}>自分</span>}
-                </td>
-                <td>{u.name}</td>
-                <td>
-                  <select
-                    value={u.role}
-                    disabled={isSelf}
-                    onChange={(e) =>
-                      run(
-                        () =>
-                          api(`/api/users/${u.id}`, {
-                            method: "PUT",
-                            body: JSON.stringify({ role: e.target.value }),
-                          }),
-                        "権限を変更しました"
-                      )
-                    }
-                  >
-                    <option value="EDITOR">{ROLE_LABEL.EDITOR}</option>
-                    <option value="ADMIN">{ROLE_LABEL.ADMIN}</option>
-                  </select>
-                </td>
-                <td>
-                  <span className={`badge ${u.active ? "green" : "red"}`}>
-                    {u.active ? "有効" : "無効"}
-                  </span>
-                </td>
-                <td className="muted">
-                  {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("ja-JP") : "-"}
-                </td>
-                <td style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => resetPassword(u)}>PW再設定</button>
-                  <button
-                    disabled={isSelf}
-                    className={u.active ? "danger" : ""}
-                    onClick={() =>
-                      run(
-                        () =>
-                          api(`/api/users/${u.id}`, {
-                            method: "PUT",
-                            body: JSON.stringify({ active: !u.active }),
-                          }),
-                        u.active ? "無効化しました" : "有効化しました"
-                      )
-                    }
-                  >
-                    {u.active ? "無効化" : "有効化"}
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <LoadingArea loading={loading} since={since} hasData={users.length > 0} message="ユーザーを読み込んでいます">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>メールアドレス</th>
+              <th>氏名</th>
+              <th>権限</th>
+              <th>状態</th>
+              <th>最終ログイン</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => {
+              const isSelf = u.id === me?.id;
+              return (
+                <tr key={u.id} style={{ opacity: u.active ? 1 : 0.5 }}>
+                  <td>{u.id}</td>
+                  <td>
+                    {u.email}
+                    {isSelf && <span className="badge" style={{ marginLeft: 6 }}>自分</span>}
+                  </td>
+                  <td>{u.name}</td>
+                  <td>
+                    <select
+                      value={u.role}
+                      disabled={isSelf}
+                      onChange={(e) =>
+                        run(
+                          () =>
+                            api(`/api/users/${u.id}`, {
+                              method: "PUT",
+                              body: JSON.stringify({ role: e.target.value }),
+                            }),
+                          "権限を変更しました"
+                        )
+                      }
+                    >
+                      <option value="EDITOR">{ROLE_LABEL.EDITOR}</option>
+                      <option value="ADMIN">{ROLE_LABEL.ADMIN}</option>
+                    </select>
+                  </td>
+                  <td>
+                    <span className={`badge ${u.active ? "green" : "red"}`}>
+                      {u.active ? "有効" : "無効"}
+                    </span>
+                  </td>
+                  <td className="muted">
+                    {u.lastLoginAt ? new Date(u.lastLoginAt).toLocaleString("ja-JP") : "-"}
+                  </td>
+                  <td style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => resetPassword(u)}>PW再設定</button>
+                    <button
+                      disabled={isSelf}
+                      className={u.active ? "danger" : ""}
+                      onClick={() =>
+                        run(
+                          () =>
+                            api(`/api/users/${u.id}`, {
+                              method: "PUT",
+                              body: JSON.stringify({ active: !u.active }),
+                            }),
+                          u.active ? "無効化しました" : "有効化しました"
+                        )
+                      }
+                    >
+                      {u.active ? "無効化" : "有効化"}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </LoadingArea>
       <p className="muted">
         無効化するとログインできなくなり、既存セッションも破棄されます（履歴保全のため削除はしません）。
       </p>

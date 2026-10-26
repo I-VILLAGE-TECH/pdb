@@ -1,36 +1,13 @@
-// CF系メーカーの表記をVBAの表記マスタ(Setメーカー名)に合わせて補正する
-//   npm run db:seed-maker-names
-// 出典: vba/ceilingfan/modules/Shopserve用.bas:2035 Setメーカー名
-//   Case 1(日本語表記)→nameJp / Case 6(英語表記)→nameEn / Case 10(FSカテゴリ・グループ用)→aliases.fsGroup
-// futureshop商品CSVのメイングループ・商品名・キーワード再現に必要。何度でも実行可(上書き)。
+// メーカーマスタの初期値を入れる(表記の正はマスタ管理画面。2026-10-26 決定)
+//   npm run db:seed-maker-names(deploy.sh が毎回実行する)
+// 画面で変更した値を上書きしないよう、まだ設定されていないメーカー・項目にだけ入れる。
+// - CF: 現行マクロの表記(Setメーカー名。lib/cfMakerNames.ts)。区分1・6を和名・英名に、それ以外を cf_notations に入れる。
+//       cf_notations が未設定のメーカーだけが対象(設定済みなら和名・英名も触らない)
+// - PL: 並び順係数(sort_level が既定値 999 のときだけ)、メイングループ表記の補正(aliases.fsGroupPl が無いときだけ)
 import { PrismaClient } from "@prisma/client";
+import { cfInitialNotations, CF_MAKER_NAMES } from "../lib/cfMakerNames.js";
 
 const prisma = new PrismaClient();
-
-// makerCode → [カナ(Case1), 英語(Case6), FSグループ表記(Case10)]
-const CF_MAKER_NAMES: Record<string, [string, string, string]> = {
-  I: ["ファズー", "I.VILLAGE", "ファズーファン／FAZOO FAN"],
-  A: ["アグレッド", "AGLED", "アグレッド／AGLED"],
-  N: ["NEC", "NEC_LIGHTING", "NEC"],
-  O: ["オーデリック", "ODELIC", "オーデリック／ODELIC"],
-  R: ["オーブ", "ORRB", "オーブ／ORRB"],
-  K: ["コイズミ", "KOIZUMI", "コイズミ照明／KOIZUMI"],
-  W: ["ライフオンプロダクツ", "LIFE ON PRODUCTS", "JAVALO ELF／ライフオンプロダクツ"],
-  D: ["ダイコー", "DAIKO", "大光電機／DAIKO"],
-  Z: ["タキズミ", "TAKIZUMI", "瀧住電機工業／TAKIZUMI"],
-  L: ["ダルトン", "DULTON", "ダルトン／DULTON"],
-  M: ["東京メタル工業", "TOKYOMETAL", "東京メタル工業／Tome"],
-  T: ["東芝", "TOSHIBA", "東芝／TOSHIBA"],
-  J: ["日本電興", "NIHONDENKO", "日本電興／NIHON DENKO"],
-  P: ["パナソニック", "PANASONIC", "パナソニック／Panasonic"],
-  H: ["ハモサ", "HERMOSA", "ハモサ／HERMOSA"],
-  PH: ["ファイテン", "PHITEN", "ファイテン／phiten"],
-  MA: ["マントラ", "MANTRA", "マントラ／mAntra"],
-  E: ["三菱電機", "MITSUBISHI ELECTRIC", "三菱電機／MITSUBISHI"],
-  X: ["BRID[メルクロス]", "BRID MERCROS", "メルクロス／BRID"],
-  Y: ["ユーワ", "YOUWA", "ユーワ／YOUWA"],
-  IM: ["ミンカエアー", "MINKA AIRE", "海外／輸入ファン"],
-};
 
 // PL版の優先度計算用メーカー係数(vba/pendantlight/modules/Common.bas SORT_LEVEL_*)
 const PL_MAKER_SORT_LEVELS: Record<string, number> = {
@@ -46,34 +23,46 @@ const PL_FS_GROUPS: Record<string, string> = {
 };
 
 async function main() {
-  let updated = 0;
-  for (const [code, [kana, en, fsGroup]] of Object.entries(CF_MAKER_NAMES)) {
+  // CF: cf_notations が未設定のメーカーだけ初期化する
+  let cfInit = 0;
+  const cfCodes = Object.keys(CF_MAKER_NAMES[1] ?? {});
+  for (const code of cfCodes) {
     const maker = await prisma.maker.findUnique({ where: { makerCode: code } });
-    if (!maker) continue;
+    if (!maker || maker.cfNotations != null) continue;
+    const init = cfInitialNotations(code);
+    if (!init) continue;
     const aliases = {
       ...(typeof maker.aliases === "object" && maker.aliases ? maker.aliases : {}),
-      fsGroup,
+      ...(init.cfNotations["10"] ? { fsGroup: init.cfNotations["10"] } : {}),
     };
     await prisma.maker.update({
       where: { id: maker.id },
-      data: { nameJp: kana, nameEn: en, aliases },
+      data: {
+        nameJp: init.nameJp ?? maker.nameJp,
+        nameEn: init.nameEn ?? maker.nameEn,
+        cfNotations: init.cfNotations,
+        aliases,
+      },
     });
-    updated++;
+    cfInit++;
   }
+  // PL: メイングループ表記の補正(未設定のときだけ)
   let plGroups = 0;
   for (const [code, fsGroupPl] of Object.entries(PL_FS_GROUPS)) {
     const maker = await prisma.maker.findUnique({ where: { makerCode: code } });
     if (!maker) continue;
-    const aliases = { ...(typeof maker.aliases === "object" && maker.aliases ? maker.aliases : {}), fsGroupPl };
-    await prisma.maker.update({ where: { id: maker.id }, data: { aliases } });
+    const current = (typeof maker.aliases === "object" && maker.aliases ? maker.aliases : {}) as Record<string, unknown>;
+    if (typeof current.fsGroupPl === "string") continue;
+    await prisma.maker.update({ where: { id: maker.id }, data: { aliases: { ...current, fsGroupPl } } });
     plGroups++;
   }
+  // PL: 並び順係数(既定値 999 のときだけ)
   let sorted = 0;
   for (const [code, level] of Object.entries(PL_MAKER_SORT_LEVELS)) {
-    const r = await prisma.maker.updateMany({ where: { makerCode: code }, data: { sortLevel: level } });
+    const r = await prisma.maker.updateMany({ where: { makerCode: code, sortLevel: 999 }, data: { sortLevel: level } });
     sorted += r.count;
   }
-  console.log(`メーカー表記を補正しました: ${updated} 件 / PLグループ表記: ${plGroups} 件 / PL並び順係数: ${sorted} 件`);
+  console.log(`メーカーマスタの初期値を設定しました(未設定分のみ): CF表記 ${cfInit} 件 / PLグループ表記 ${plGroups} 件 / PL並び順係数 ${sorted} 件`);
 }
 
 main()

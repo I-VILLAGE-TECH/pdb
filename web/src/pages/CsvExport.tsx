@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, STATUS_LABEL } from "../lib/api";
+import { LoadingStatus, ProgressBar, Spinner } from "../components/Loading";
 import { useAuth } from "../lib/AuthContext";
 import { clearMarks, getMarks } from "../lib/marks";
 
@@ -53,6 +54,7 @@ async function saveBlobResponse(res: Response) {
 }
 
 type ExportJobStatus = {
+  startedAt?: number;
   status: "RUNNING" | "DONE" | "ERROR";
   phase: string;
   processed: number;
@@ -143,26 +145,14 @@ export function CsvExport() {
         await downloadByPost("/api/products/export", filterBody());
         return;
       }
-      // 連携先CSVは時間がかかるためジョブ化して進捗をダイアログ表示
-      const { jobId } = await api<{ jobId: string }>("/api/exports/jobs", {
-        method: "POST",
-        body: JSON.stringify({ ...filterBody(), channelId: Number(target) }),
-      });
-      setExportJob({ status: "RUNNING", phase: "準備中", processed: 0, total: 0 });
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 500));
-        const st = await api<ExportJobStatus>(`/api/exports/jobs/${jobId}`);
-        setExportJob(st);
-        if (st.status === "DONE") {
-          const res = await fetch(`/api/exports/jobs/${jobId}/download`, {
-            credentials: "same-origin",
-          });
-          if (!res.ok) throw new Error("ダウンロードに失敗しました");
-          await saveBlobResponse(res);
-          setExportJob(null);
-          return;
-        }
-        if (st.status === "ERROR") return; // ダイアログにエラー表示(閉じるで消す)
+      // 連携先CSVはサーバが1リクエストで生成して返す(数秒)。生成中はダイアログを表示
+      setExportJob({ status: "RUNNING", phase: "作成中", processed: 0, total: 0, startedAt: Date.now() });
+      try {
+        await downloadByPost("/api/exports/download", { ...filterBody(), channelId: Number(target) });
+        setExportJob(null);
+      } catch (e) {
+        // ダイアログにエラー表示(閉じるで消す)
+        setExportJob({ status: "ERROR", phase: "", processed: 0, total: 0, error: e instanceof Error ? e.message : String(e) });
       }
     } catch (e) {
       setExportJob(null);
@@ -364,7 +354,14 @@ export function CsvExport() {
       <div className="toolbar">
         {target !== MASTER && !isSetType && (
           <button onClick={loadPreview} disabled={busy || (markedOnly && marks.size === 0)}>
-            {busy ? "生成中…" : "プレビュー"}
+            {busy ? (
+              <>
+                <Spinner />
+                生成中…
+              </>
+            ) : (
+              "プレビュー"
+            )}
           </button>
         )}
         <button
@@ -404,41 +401,12 @@ export function CsvExport() {
               </>
             ) : (
               <>
-                <p style={{ margin: "0 0 10px" }}>
-                  {exportJob.phase}
-                  {exportJob.total > 0 && exportJob.phase === "生成中" && (
-                    <>
-                      …{exportJob.processed.toLocaleString()} / {exportJob.total.toLocaleString()} 件
-                    </>
-                  )}
-                </p>
-                <div
-                  style={{
-                    height: 10,
-                    borderRadius: 5,
-                    background: "rgba(100,116,139,0.25)",
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      height: "100%",
-                      width:
-                        exportJob.status === "DONE"
-                          ? "100%"
-                          : exportJob.total > 0
-                            ? `${Math.round((exportJob.processed / exportJob.total) * 100)}%`
-                            : "8%",
-                      background: "var(--accent, #2563eb)",
-                      transition: "width 0.3s",
-                    }}
-                  />
-                </div>
-                <p className="muted" style={{ marginTop: 10 }}>
-                  {exportJob.status === "DONE"
-                    ? "ダウンロードを開始しています…"
-                    : "生成が完了すると自動でダウンロードが始まります"}
-                </p>
+                <ProgressBar percent={null} />
+                <LoadingStatus
+                  message="ファイルを作成しています"
+                  startedAt={exportJob.startedAt}
+                  note="作成が終わると自動でダウンロードが始まります(数秒〜数十秒)"
+                />
               </>
             )}
           </div>

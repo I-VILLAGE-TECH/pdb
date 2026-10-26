@@ -50,6 +50,7 @@ export type Maker = {
   nameEn: string | null;
   imgFolder: string | null;
   sortLevel: number;
+  cfNotations?: Record<string, string> | null; // シーリングファン(CF)用の表記(区分番号→表記)
   _count?: { products: number };
 };
 

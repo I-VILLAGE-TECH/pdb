@@ -10,6 +10,7 @@ import {
   type Paged,
   type Product,
 } from "../lib/api";
+import { LoadingArea, useLoading } from "../components/Loading";
 
 // グリッド行（編集値はすべて文字列で保持し、保存時に型変換）
 type SheetRow = {
@@ -89,6 +90,7 @@ export function ProductSheet() {
 
   const page = Number(params.get("page") ?? 1);
 
+  const { loading, since, track } = useLoading();
   const load = useCallback(() => {
     const query = new URLSearchParams();
     for (const key of ["q", "category", "makerId"]) {
@@ -99,7 +101,7 @@ export function ProductSheet() {
     query.set("perPage", String(PER_PAGE));
     query.set("sort", "productCode");
     query.set("order", "asc");
-    api<Paged<Product>>(`/api/products?${query}`)
+    track(api<Paged<Product>>(`/api/products?${query}`))
       .then((d) => {
         const rs = d.items.map(toRow);
         setRows(rs);
@@ -109,7 +111,7 @@ export function ProductSheet() {
         setMessage("");
       })
       .catch((e) => setError(e.message));
-  }, [params, page]);
+  }, [params, page, track]);
 
   useEffect(() => {
     load();
@@ -329,15 +331,17 @@ export function ProductSheet() {
       {error && <div className="error">{error}</div>}
       {message && <div style={{ color: "#166534", padding: "4px 0" }}>{message}</div>}
 
-      <DataGrid
-        className="rdg-light product-sheet-grid"
-        columns={columns}
-        rows={rows}
-        onRowsChange={onRowsChange}
-        rowKeyGetter={(r) => r.id}
-        rowClass={(r) => (dirtyIds.has(r.id) ? "row-dirty" : undefined)}
-        defaultColumnOptions={{ sortable: false }}
-      />
+      <LoadingArea loading={loading} since={since} hasData={rows.length > 0} message="商品を読み込んでいます">
+        <DataGrid
+          className="rdg-light product-sheet-grid"
+          columns={columns}
+          rows={rows}
+          onRowsChange={onRowsChange}
+          rowKeyGetter={(r) => r.id}
+          rowClass={(r) => (dirtyIds.has(r.id) ? "row-dirty" : undefined)}
+          defaultColumnOptions={{ sortable: false }}
+        />
+      </LoadingArea>
 
       <div className="pagination">
         <button disabled={page <= 1} onClick={() => setFilter("page", String(page - 1))}>

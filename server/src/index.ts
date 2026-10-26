@@ -75,7 +75,9 @@ app.use(
   ) => {
     console.error(err);
     const message = err instanceof Error ? err.message : "internal error";
-    res.status(500).json({ error: message });
+    // ルート側で付けた status(400 入力不正 / 409 実行中 等)があればそれを返す
+    const status = (err as { status?: unknown } | null)?.status;
+    res.status(typeof status === "number" && status >= 400 && status < 600 ? status : 500).json({ error: message });
   }
 );
 

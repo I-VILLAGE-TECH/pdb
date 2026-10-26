@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { LoadingStatus } from "../components/Loading";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   api,
@@ -92,6 +93,7 @@ function AttrsTable({ attrs, labels }: { attrs: Record<string, unknown>; labels:
 }
 
 export function ProductDetail() {
+  const [openedAt] = useState(() => Date.now());
   const { id } = useParams();
   const navigate = useNavigate();
   const [product, setProduct] = useState<Product | null>(null);
@@ -318,7 +320,7 @@ export function ProductDetail() {
   }
 
   if (error && !product) return <div className="error">{error}</div>;
-  if (!product) return <div className="muted">読み込み中…</div>;
+  if (!product) return <LoadingStatus message="商品を読み込んでいます" startedAt={openedAt} />;
 
   return (
     <div>

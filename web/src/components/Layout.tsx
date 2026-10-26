@@ -32,9 +32,13 @@ const NAV_GROUPS: NavGroup[] = [
     label: "連携",
     items: [
       { to: "/exports", label: "CSV出力" },
-      { to: "/sync", label: "連携状況" },
-      { to: "/channels", label: "連携先設定" },
+      // 連携状況(/sync)・連携先設定(/channels)は Phase2(API連携・差分管理)で使うためメニューには出さない。画面とルートは残す
     ],
+  },
+  {
+    key: "help",
+    label: "ヘルプ",
+    items: [{ to: "/manual", label: "操作マニュアル" }],
   },
   {
     key: "system",

@@ -18,7 +18,7 @@ const upload = multer({
   limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
 });
 
-importsRouter.post("/", upload.single("file"), (req, res, next) => {
+importsRouter.post("/", upload.single("file"), async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: "ファイルが指定されていません" });
     const { mode } = z.object({ mode: z.enum(["diff", "replace"]) }).parse(req.body);
@@ -26,7 +26,7 @@ importsRouter.post("/", upload.single("file"), (req, res, next) => {
     if (!/\.(xlsx|xlsm|xlsb)$/i.test(fileName)) {
       return res.status(400).json({ error: "Excelファイル（.xlsx / .xlsm / .xlsb）を指定してください" });
     }
-    const job = startImportJob(fileName, req.file.buffer, mode, req.user!.name);
+    const job = await startImportJob(fileName, req.file.buffer, mode, req.user!.name);
     res.status(202).json(job);
   } catch (e) {
     next(e);

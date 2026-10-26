@@ -14,7 +14,7 @@ if (!file) {
 }
 const mode = args.includes("--replace") ? "replace" : "diff";
 
-const job = startImportJob(path.basename(file), readFileSync(file), mode, "cli");
+const job = await startImportJob(path.basename(file), readFileSync(file), mode, "cli");
 let last = "";
 for (;;) {
   await new Promise((r) => setTimeout(r, 1000));

@@ -1,8 +1,9 @@
-// CFブックのメーカー表記マスタ(現行VBA Shopserve用.bas:2035 Setメーカー名 の移植)
-// 表記は VBA にハードコードされている値をそのまま持つ(iClass ごと×メーカーID)。
-// "EE" は表に無く、シートのメーカー列の値を使う(iClass 2/8/16)。表に無いメーカーは VBA では Stop(停止)
+// CFブックのメーカー表記(現行VBA Shopserve用.bas:2035 Setメーカー名 の移植)
+// 表記の正はメーカーマスタ(makers.name_jp / name_en / cf_notations。マスタ管理画面で管理。2026-10-26 決定)。
+// 下の表は現行マクロにハードコードされていた値で、メーカーマスタの初期値としてだけ使う(seed-maker-names)。
+// "EE" は表に無く、シートのメーカー列の値を使う(iClass 2/8/16)。表記が無いメーカーは VBA では Stop(停止)
 
-const CF_MAKER_NAMES: Record<number, Record<string, string>> = {
+export const CF_MAKER_NAMES: Record<number, Record<string, string>> = {
   // 1: 日本語表記
   1: {
     I: "ファズー",
@@ -393,13 +394,36 @@ const CF_MAKER_NAMES: Record<number, Record<string, string>> = {
   },
 };
 
+// 区分1・6はメーカー名(和名・英名)そのもの。それ以外を cf_notations に持つ
+export const CF_NOTATION_NAME_CLASSES: Record<number, "nameJp" | "nameEn"> = { 1: "nameJp", 6: "nameEn" };
+
+// メーカーマスタの初期値(現行マクロの表記)。区分1・6は nameJp / nameEn、それ以外は cf_notations 用
+export function cfInitialNotations(makerCode: string): { nameJp?: string; nameEn?: string; cfNotations: Record<string, string> } | null {
+  const notations: Record<string, string> = {};
+  let found = false;
+  for (const [cls, table] of Object.entries(CF_MAKER_NAMES)) {
+    if (!(makerCode in table)) continue;
+    found = true;
+    if (!CF_NOTATION_NAME_CLASSES[Number(cls)]) notations[cls] = table[makerCode];
+  }
+  if (!found) return null;
+  return { nameJp: CF_MAKER_NAMES[1]?.[makerCode], nameEn: CF_MAKER_NAMES[6]?.[makerCode], cfNotations: notations };
+}
+
+type MakerNotationSource = { makerCode: string; nameJp: string; nameEn: string | null; cfNotations: unknown } | null | undefined;
+
+// 出力用の表記(Setメーカー名(lRow, iClass) 相当)。メーカーマスタの値を使う。
 // makerCellName: シートのメーカー列(INPUT_COLメーカー)の値。EE(その他メーカー)の表記に使う
-export function cfMakerName(makerCode: string | null | undefined, iClass: number, makerCellName?: string | null): string {
-  const code = makerCode ?? "";
-  if (code === "EE") {
+export function cfMakerNotation(maker: MakerNotationSource, iClass: number, makerCellName?: string | null): string {
+  if (!maker) return "";
+  if (maker.makerCode === "EE") {
     const cell = makerCellName ?? "";
     if (iClass === 2 || iClass === 8) return cell;
     if (iClass === 16) return `${cell},`;
   }
-  return CF_MAKER_NAMES[iClass]?.[code] ?? "";
+  if (iClass === 1) return maker.nameJp;
+  if (iClass === 6) return maker.nameEn ?? "";
+  const notations = (maker.cfNotations ?? {}) as Record<string, unknown>;
+  const v = notations[String(iClass)];
+  return typeof v === "string" ? v : "";
 }

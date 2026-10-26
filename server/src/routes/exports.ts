@@ -806,8 +806,10 @@ async function handleCsv(req: Request, res: Response, next: NextFunction) {
 exportsRouter.get("/csv", handleCsv);
 exportsRouter.post("/csv", handleCsv);
 
-// ============ 進捗付きエクスポートジョブ ============
-// 全件出力は生成に時間がかかるため、ジョブ開始→進捗ポーリング→完成ファイル取得の3段構成
+// ============ ファイル出力(1リクエストで生成して返す) ============
+// Cloud Run は応答を返した後のバックグラウンド処理に CPU を割り当てないため、生成はリクエストの中で行う
+// (全種とも数秒で終わる。documents/03_設計/01_全体/06_連携エンジン・インフラ設計.md)。
+// ExportJob は生成処理(runExportJob)の結果の入れ物として使う
 type ExportJob = {
   id: string;
   status: "RUNNING" | "DONE" | "ERROR";
@@ -820,15 +822,6 @@ type ExportJob = {
   error?: string;
   startedAt: number;
 };
-const exportJobs = new Map<string, ExportJob>();
-// 完了後30分で破棄(ダウンロードし忘れ対策で即時削除はしない)
-const EXPORT_JOB_TTL_MS = 30 * 60 * 1000;
-function sweepExportJobs() {
-  const now = Date.now();
-  for (const [id, j] of exportJobs) {
-    if (now - j.startedAt > EXPORT_JOB_TTL_MS) exportJobs.delete(id);
-  }
-}
 
 // Excelボタン相当のセット出力(1ボタン=複数CSVをZIPで)
 const FS_SET_TYPES: Record<string, { members: FsSubFileType[]; zipName: string }> = {
@@ -1028,9 +1021,9 @@ exportsRouter.get("/file-types", async (req, res, next) => {
   }
 });
 
-exportsRouter.post("/jobs", (req, res, next) => {
+// ファイル出力(分割時・セット出力時はZIP)。エクスポート画面のダウンロードボタン
+exportsRouter.post("/download", async (req, res, next) => {
   try {
-    sweepExportJobs();
     const f = parseFilter(req);
     const job: ExportJob = {
       id: randomUUID(),
@@ -1040,38 +1033,19 @@ exportsRouter.post("/jobs", (req, res, next) => {
       total: 0,
       startedAt: Date.now(),
     };
-    exportJobs.set(job.id, job);
-    void runExportJob(job, f);
-    res.json({ jobId: job.id });
+    await runExportJob(job, f);
+    if (job.status !== "DONE" || !job.body) {
+      return res.status(400).json({ error: job.error ?? "ファイルを作成できませんでした" });
+    }
+    const ext = (job.filename ?? "").endsWith(".zip") ? "zip" : "csv";
+    const ascii = /^[\x20-\x7e]+$/.test(job.filename ?? "") ? job.filename : `export.${ext}`;
+    res.setHeader("Content-Type", job.contentType ?? "text/csv");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(job.filename ?? "export.csv")}`
+    );
+    res.send(job.body);
   } catch (e) {
     next(e);
   }
-});
-
-exportsRouter.get("/jobs/:id", (req, res) => {
-  const job = exportJobs.get(req.params.id);
-  if (!job) return res.status(404).json({ error: "ジョブが見つかりません" });
-  res.json({
-    status: job.status,
-    phase: job.phase,
-    processed: job.processed,
-    total: job.total,
-    filename: job.filename,
-    error: job.error,
-  });
-});
-
-exportsRouter.get("/jobs/:id/download", (req, res) => {
-  const job = exportJobs.get(req.params.id);
-  if (!job || job.status !== "DONE" || !job.body) {
-    return res.status(404).json({ error: "ダウンロード可能なファイルがありません" });
-  }
-  const ext = (job.filename ?? "").endsWith(".zip") ? "zip" : "csv";
-  const ascii = /^[\x20-\x7e]+$/.test(job.filename ?? "") ? job.filename : `export.${ext}`;
-  res.setHeader("Content-Type", job.contentType ?? "text/csv");
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(job.filename ?? "export.csv")}`
-  );
-  res.send(job.body);
 });
