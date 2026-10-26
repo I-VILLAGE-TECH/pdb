@@ -956,6 +956,19 @@ th.drag-over {
   font-size: 11px;
 }
 
+.sidebar-account-link {
+  display: inline-block;
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 11px;
+  text-decoration: underline;
+}
+
+.sidebar-account-link:hover,
+.sidebar-account-link.active {
+  color: #e2e8f0;
+}
+
 .logout-btn {
   width: 100%;
   background: transparent;

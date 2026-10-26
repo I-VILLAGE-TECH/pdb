@@ -15,6 +15,18 @@ import { readFileBuffer, removeFile, saveFile } from "./storage.js";
 
 export type ImportMode = "diff" | "replace";
 
+// 取込後のマスタ確認(管理者が「マスタに追加するか」を選ぶための材料)
+// - values: 取り込んだ商品にあって汎用マスタ(master_items)に無い値。取込では追加せず、画面で選んで追加する
+// - newMakers: この取込で新しく作ったメーカー(商品の紐付けに必要なため取込時に作る。表記の確認・補完用)
+// - reviewedAt/By: 「確認済み」にした日時・実行者
+export type MasterReviewValue = { type: string; value: string; count: number; samples: string[] };
+export type MasterReview = {
+  values: MasterReviewValue[];
+  newMakers: Array<{ id: number; makerCode: string; nameJp: string }>;
+  reviewedAt?: string;
+  reviewedBy?: string;
+};
+
 export type ImportJob = {
   id: string;
   fileName: string;
@@ -30,6 +42,7 @@ export type ImportJob = {
   startedAt: string;
   finishedAt?: string;
   triggeredBy: string;
+  masterReview?: MasterReview;
 };
 
 const jobs = new Map<string, ImportJob>();
@@ -50,6 +63,7 @@ async function persistJob(job: ImportJob): Promise<void> {
     triggeredBy: job.triggeredBy,
     startedAt: new Date(job.startedAt),
     finishedAt: job.finishedAt ? new Date(job.finishedAt) : null,
+    masterReview: job.masterReview ? (job.masterReview as unknown as Prisma.InputJsonValue) : Prisma.DbNull,
   };
   await prisma.importJob
     .upsert({ where: { id: job.id }, create: { id: job.id, ...data }, update: data })
@@ -71,6 +85,7 @@ function rowToJob(row: {
   triggeredBy: string;
   startedAt: Date;
   finishedAt: Date | null;
+  masterReview: unknown;
 }): ImportJob {
   return {
     id: row.id,
@@ -87,6 +102,7 @@ function rowToJob(row: {
     startedAt: row.startedAt.toISOString(),
     finishedAt: row.finishedAt?.toISOString(),
     triggeredBy: row.triggeredBy,
+    masterReview: (row.masterReview as MasterReview | null) ?? undefined,
   };
 }
 
@@ -123,6 +139,65 @@ function isPlBookCode(code: string): boolean {
   return /^[A-Z]+-\d/.test(code);
 }
 
+// 汎用マスタの種別と、取込データ(ProductJson)の項目の対応(scripts/extract-masters.ts と同じ)
+function masterValuesOf(p: ProductJson): Array<[string, unknown]> {
+  const l = (p.lightingAttrs ?? {}) as Record<string, unknown>;
+  const f = (p.fanAttrs ?? {}) as Record<string, unknown>;
+  return [
+    ["supplier", p.supplier],
+    ["warranty", p.warranty],
+    ["body_color", p.bodyColor],
+    ["installation_type", l.installationType],
+    ["bulb_base", l.bulbBase],
+    ["bulb_color", l.bulbColor],
+    ["material", l.material],
+    ["light_color", f.lightColor],
+    ["motor_type", f.motorType],
+  ];
+}
+
+// 取り込んだ商品の値のうち、汎用マスタに無いもの(無効にした値は「登録済み」とみなす)
+async function findMissingMasterValues(products: ProductJson[]): Promise<MasterReviewValue[]> {
+  const found = new Map<string, MasterReviewValue>();
+  for (const p of products) {
+    for (const [type, raw] of masterValuesOf(p)) {
+      const value = typeof raw === "string" ? raw.trim() : "";
+      if (!value) continue;
+      const key = `${type}\t${value}`;
+      const v = found.get(key) ?? { type, value, count: 0, samples: [] };
+      v.count++;
+      if (v.samples.length < 3) v.samples.push(p.productCode);
+      found.set(key, v);
+    }
+  }
+  const registered = new Set(
+    (await prisma.masterItem.findMany({ select: { type: true, value: true } })).map((m) => `${m.type}\t${m.value}`)
+  );
+  return [...found.entries()]
+    .filter(([key]) => !registered.has(key))
+    .map(([, v]) => v)
+    .sort((a, b) => a.type.localeCompare(b.type) || b.count - a.count);
+}
+
+// 画面表示用: 取込後にマスタへ追加された値を除く(追加すると一覧から消える)
+export async function withPendingReview(jobs: ImportJob[]): Promise<ImportJob[]> {
+  if (!jobs.some((j) => j.masterReview?.values.length)) return jobs;
+  const registered = new Set(
+    (await prisma.masterItem.findMany({ select: { type: true, value: true } })).map((m) => `${m.type}\t${m.value}`)
+  );
+  return jobs.map((j) =>
+    j.masterReview
+      ? {
+          ...j,
+          masterReview: {
+            ...j.masterReview,
+            values: j.masterReview.values.filter((v) => !registered.has(`${v.type}\t${v.value}`)),
+          },
+        }
+      : j
+  );
+}
+
 function clean(obj: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
 }
@@ -134,8 +209,12 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
   job.status = "RUNNING";
   await persistJob(job);
 
-  // メーカー（既存は上書きしない: 運用で編集した名称を守る）
+  // メーカー（既存は上書きしない: 運用で編集した名称を守る）。新しく作ったものはマスタ確認に載せる
   const makerMap = new Map<string, number>();
+  const knownMakerCodes = new Set(
+    (await prisma.maker.findMany({ select: { makerCode: true } })).map((m) => m.makerCode)
+  );
+  const newMakers: MasterReview["newMakers"] = [];
   for (const m of makers) {
     const maker = await prisma.maker.upsert({
       where: { makerCode: m.makerCode },
@@ -143,6 +222,9 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
       update: {},
     });
     makerMap.set(m.makerCode, maker.id);
+    if (!knownMakerCodes.has(m.makerCode)) {
+      newMakers.push({ id: maker.id, makerCode: maker.makerCode, nameJp: maker.nameJp });
+    }
   }
 
   const channels = await prisma.channel.findMany();
@@ -273,6 +355,8 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
     job.softDeleted = result.count;
   }
 
+  job.masterReview = { values: await findMissingMasterValues(products), newMakers };
+
   job.status = "DONE";
   job.finishedAt = new Date().toISOString();
   await persistJob(job);
@@ -376,4 +460,40 @@ export async function runImportJobById(jobId: string): Promise<ImportJob> {
     await removeFile(uploadKey(job.id));
   }
   return job;
+}
+
+// 取込のマスタ確認: 選んだ値を汎用マスタに追加する(各種別の末尾に並べる。既にあるものは無視)
+export async function addMasterValues(
+  jobId: string,
+  items: Array<{ type: string; value: string }>
+): Promise<number> {
+  const job = await getJob(jobId);
+  if (!job?.masterReview) throw Object.assign(new Error("マスタ確認の対象がありません"), { status: 404 });
+  const candidates = new Set(job.masterReview.values.map((v) => `${v.type}\t${v.value}`));
+  const picked = items.filter((i) => candidates.has(`${i.type}\t${i.value}`));
+  if (picked.length !== items.length) {
+    throw Object.assign(new Error("この取込で見つかった値以外は追加できません"), { status: 400 });
+  }
+  let added = 0;
+  for (const type of new Set(picked.map((i) => i.type))) {
+    const max = await prisma.masterItem.aggregate({ where: { type }, _max: { sortNo: true } });
+    let sortNo = Math.max(max._max.sortNo ?? 0, 0);
+    const result = await prisma.masterItem.createMany({
+      data: picked.filter((i) => i.type === type).map((i) => ({ type, value: i.value, sortNo: ++sortNo })),
+      skipDuplicates: true,
+    });
+    added += result.count;
+  }
+  return added;
+}
+
+// 取込のマスタ確認を「確認済み」にする(残った値はマスタに追加しないと判断したもの)
+export async function markMasterReviewed(jobId: string, reviewedBy: string): Promise<void> {
+  const job = await getJob(jobId);
+  if (!job?.masterReview) throw Object.assign(new Error("マスタ確認の対象がありません"), { status: 404 });
+  job.masterReview = { ...job.masterReview, reviewedAt: new Date().toISOString(), reviewedBy };
+  await prisma.importJob.update({
+    where: { id: jobId },
+    data: { masterReview: job.masterReview as unknown as Prisma.InputJsonValue },
+  });
 }

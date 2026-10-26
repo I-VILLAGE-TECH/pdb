@@ -90,6 +90,25 @@ function cellRaw(v: Cell): string | number | boolean | null {
 
 // ---------- ペンダントライト（.xlsm） ----------
 
+// HTML出力(PL: futureshopSPEC.bas / CF: original_JPG.bas・spec.bas)用に生セルを保持する列(VBAの列番号=1始まり)
+// HTMLはセル値をそのまま連結するため、数値/文字列の型と前後の空白を保ったまま持つ
+const PL_SPEC_COLS = [
+  1, 4, 5, 7, 16, 17, 21, 23, 24, 25, 28, 51, 52, 53, 54, 55, 56, 57, 58, 60, 61, 63, 64,
+  71, 72, 73, 74, 75, 76, 77, 78, 79, 83, 93, 94, 100, 132, 133,
+];
+const CF_SPEC_COLS = [
+  1, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 40, 41,
+  56, 57, 58, 59, 60, 61, 62, 64, 65, 67, 68, 69, 70, 71, 72, 73, 77, 78, 79, 80, 87, 113, 143,
+];
+function specCells(row: Row, cols: number[]): Record<string, string | number | boolean | null> {
+  const o: Record<string, string | number | boolean | null> = {};
+  for (const c of cols) {
+    const v = cellRaw(row[c - 1]);
+    if (v != null && v !== "") o[c] = v;
+  }
+  return o;
+}
+
 const PL_SHEET = "ペンダントライト一覧";
 // 同じ列構成の別管理シート(オプション・ライティングレール部材等)。FS出力は同じマクロで行う
 const PL_OTHER_SHEET = "その他別管理一覧FS";
@@ -123,6 +142,8 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
   const sheets = [PL_SHEET, ...(wb.SheetNames.includes(PL_OTHER_SHEET) ? [PL_OTHER_SHEET] : [])];
   // シートごとのA1セル(Variationモード/Optionモード)。FS商品CSVの在庫管理・現在在庫数が切り替わる
   const sheetModes = new Map<string, string | null>();
+  // 行のシート上の位置(HTML出力: 商品グループ内の行をシート順に並べる)
+  const rowPos = new Map<Row, number>();
   for (const sheetName of sheets) {
     const rows = sheetRows(wb, sheetName);
     sheetModes.set(sheetName, s(rows[0]?.[0]));
@@ -139,6 +160,7 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         continue;
       }
       lastParentCode = parentCode;
+      rowPos.set(row, ri);
       if (sheetName === PL_SHEET) {
         const list = plRakutenRows.get(parentCode) ?? [];
         list.push({
@@ -314,6 +336,17 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         opCategory: s(p[132]), // その他管理用カテゴリ1(その他シートのFS画像ALT・タグ表示に使う。例: オプション部品)
         // 幅/奥行/高さ/全高min/maxの生値(小数あり。widthMm等はIntで丸まるためFS独自コメント(6)の表記に使う)
         sizeText: { width: s(p[50]), depth: s(p[51]), height: s(p[52]), totalMin: s(p[54]), totalMax: s(p[55]) },
+        // SPEC HTML(★FS_SPEC)用: 商品グループの各行の生セル(シート順)。キーはVBAの列番号
+        specRows: [...allRows]
+          .sort((a, b) => (rowPos.get(a) ?? 0) - (rowPos.get(b) ?? 0))
+          .map((r) => specCells(r, PL_SPEC_COLS)),
+        // Yahoo画像(ChangeImageFileName_yahooPL)用: 行(SKU)ごとの画像列 M01〜F06(VBA列100〜125)。
+        // 電球違いの行でメイン画像・機能説明画像が異なる商品があるため、商品の画像(親行)とは別に持つ
+        plRowImages: Object.fromEntries(
+          allRows
+            .filter((r) => s(r[18]))
+            .map((r) => [s(r[18]), Array.from({ length: 26 }, (_, i) => s(r[99 + i]) ?? "")])
+        ),
       },
       lightingAttrs: {
         bulbType: s(p[75]),
@@ -623,6 +656,8 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         // FS商品画像ALT用: 画像データM1・M2の生セル。実シートは111列目に「ダクトレール取り付け」が挿入されており、
         // M1/M2 は113/114列目(Common.bas の INPUT_COL画像データM1=112 より1列右)。ヘッダー名で確認済み
         fsMainImageCells: [rawS(row[112]), rawS(row[113])],
+        // 製品画像HTML・SPEC HTML(original_JPG.bas / spec.bas)用の生セル。キーは実シートの列番号(最新ブックの Common.bas)
+        specCells: specCells(row, CF_SPEC_COLS),
         // 楽天CSV(rakuten.bas)用の生セル。列は英字直指定(A/C/P/AD/AE/AF/AO/AU。いずれも挿入列(110)より左)
         rakutenCells: {
           a: cellRaw(row[0]), // 商品登録フラグ

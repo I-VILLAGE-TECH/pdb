@@ -11,9 +11,11 @@ import { channelsRouter } from "./routes/channels.js";
 import { categoriesRouter } from "./routes/categories.js";
 import { syncRouter } from "./routes/sync.js";
 import { exportsRouter } from "./routes/exports.js";
+import { htmlExportsRouter } from "./routes/htmlExports.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { authRouter } from "./routes/auth.js";
 import { usersRouter } from "./routes/users.js";
+import { imagesRouter } from "./routes/images.js";
 import { requireAuth } from "./lib/auth.js";
 import { contentTypeFor, streamFile } from "./lib/storage.js";
 
@@ -38,7 +40,9 @@ app.use("/api/channels", channelsRouter);
 app.use("/api/categories", categoriesRouter);
 app.use("/api/sync", syncRouter);
 app.use("/api/exports", exportsRouter);
+app.use("/api/html-exports", htmlExportsRouter);
 app.use("/api/dashboard", dashboardRouter);
+app.use("/api/images", imagesRouter);
 
 // アップロード画像の配信（ローカル/GCS共通。要ログイン）
 app.get(/^\/uploads\/(.+)$/, requireAuth, (req, res) => {

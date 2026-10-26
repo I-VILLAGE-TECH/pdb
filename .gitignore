@@ -8,3 +8,5 @@ infra/.terraform/
 infra/*.tfstate*
 infra/terraform.tfvars
 tmp/
+# ローカルの画像・取込ファイルの保存先(業務データ。storage.ts の UPLOADS_DIR 既定値)
+uploads/

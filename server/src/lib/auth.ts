@@ -34,6 +34,11 @@ export async function destroySession(req: Request, res: Response): Promise<void>
   res.clearCookie(SESSION_COOKIE, { path: "/" });
 }
 
+/** 今のリクエストのセッションID(パスワード変更時に、ほかの端末のセッションだけ破棄するため) */
+export function currentSessionId(req: Request): string | undefined {
+  return req.cookies?.[SESSION_COOKIE];
+}
+
 /** cookie のセッションを検証し req.user を設定（無効なら 401） */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {

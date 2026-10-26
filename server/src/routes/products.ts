@@ -6,6 +6,7 @@ import path from "node:path";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { contentTypeFor, removeFile, saveFile } from "../lib/storage.js";
+import { withImageUrls } from "../lib/imageAssets.js";
 
 export const productsRouter = Router();
 
@@ -347,7 +348,7 @@ productsRouter.get("/:id", async (req, res, next) => {
       },
     });
     if (!product) return res.status(404).json({ error: "not found" });
-    res.json(product);
+    res.json({ ...product, images: await withImageUrls(product.images) });
   } catch (e) {
     next(e);
   }
