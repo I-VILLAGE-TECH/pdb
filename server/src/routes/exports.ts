@@ -9,6 +9,10 @@ import JSZip from "jszip";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import {
+  findMallFileSpec, findMallSetSpec, buildMallFile, buildMallFiles, mallContentType, mallFileTypeOptions,
+  type MallFileSpec,
+} from "../lib/mallCsv.js";
+import {
   cfComment04, cfComment11, cfComment12, cfComment13, cfComment14, cfComment15, cfComment16, cfExternalCatchCopy,
   cfImageFileNames, setCfImageSizes,
 } from "../lib/fsCfComments.js";
@@ -67,12 +71,8 @@ const filterQuery = z.object({
   // ファイル種別: products(商品CSV・既定) / futureshopのサブCSV各種 /
   // Excelボタン相当のセット(option_set=オプション2種, variation_set_new/update=バリエーション4種(CFは3種)をZIPで)
   // CF固有: tag=商品タグ / image_alt=商品画像ALT / comment16=独自コメント16部分更新
-  fileType: z
-    .enum([
-      "products", ...FS_SUB_FILE_TYPES, ...FS_CF_ONLY_FILE_TYPES,
-      "option_set", "variation_set_new", "variation_set_update",
-    ])
-    .optional(),
+  // futureshop以外の連携先は lib/mallCsv.ts の種別(連携先ごとに異なる)。連携先との組み合わせは generateRows で検証する
+  fileType: z.string().regex(/^[a-z0-9_]+$/).optional(),
 });
 
 export type Filter = z.infer<typeof filterQuery>;
@@ -502,10 +502,46 @@ export async function generateRows(f: Filter, onProgress?: ExportProgress) {
     where: { id: f.channelId },
     include: { fieldMaps: { orderBy: { outputColNo: "asc" } } },
   });
+  // futureshop以外の連携先のファイル種別(lib/mallCsv.ts)。対象ブックの商品をシート順で渡す
+  if (f.fileType && f.fileType !== "products" && channel.code !== "futureshop") {
+    const spec = findMallFileSpec(channel.code, f.fileType);
+    if (!spec) {
+      throw Object.assign(new Error(`この連携先では出力できないファイル種別です: ${f.fileType}`), { status: 400 });
+    }
+    const all = (await prisma.product.findMany({
+      where: buildWhere(f),
+      include: {
+        maker: true,
+        lightingAttrs: true,
+        fanAttrs: true,
+        variations: { orderBy: { variationNo: "asc" } },
+        images: true,
+        channelPrices: true,
+        setComponents: true,
+      },
+      orderBy: [{ sheetRow: "asc" }, { id: "asc" }],
+    })) as ProductFull[];
+    const targets = spec.book === "ANY" ? all : all.filter((p) => isPL(p) === (spec.book === "PL"));
+    onProgress?.("生成中", 0, targets.length);
+    const rows = await spec.generate(targets, {
+      channel,
+      isPL,
+      func: (name, p, v) => {
+        const fn = FUNCS[name];
+        const r = fn ? fn(p, v, channel) : null;
+        return r == null ? "" : String(r);
+      },
+    });
+    onProgress?.("生成中", targets.length, targets.length);
+    return { channel, header: spec.header, rows, fileType: f.fileType, mallSpec: spec };
+  }
   // futureshopサブCSV(PLのオプション/バリエーション各種/グループひもづけ)。行はシート順(sheetRow)
   if (f.fileType && f.fileType !== "products") {
-    if (channel.code !== "futureshop") {
-      throw Object.assign(new Error("このファイル種別はfutureshopのみ対応です"), { status: 400 });
+    if (
+      ![...FS_SUB_FILE_TYPES, ...FS_CF_ONLY_FILE_TYPES].includes(f.fileType as never) ||
+      channel.code !== "futureshop"
+    ) {
+      throw Object.assign(new Error(`この連携先では出力できないファイル種別です: ${f.fileType}`), { status: 400 });
     }
     const fileType = f.fileType as FsSubFileType;
     const subProducts = (await prisma.product.findMany({
@@ -708,8 +744,8 @@ async function handlePreview(req: Request, res: Response, next: NextFunction) {
       header,
       rows: rows.slice(0, 5),
       total: rows.length,
-      // 分割目安: サブCSVは種別ごとの件数(PL/CFで異なる。subMeta)、商品CSVはchannels.split_rows
-      splitRows: subMetaOf(result)?.splitRows ?? channel.splitRows,
+      // 分割目安: サブCSVは種別ごとの件数(PL/CFで異なる。subMeta)、他連携先は種別定義、商品CSVはchannels.split_rows
+      splitRows: subMetaOf(result)?.splitRows ?? mallSpecOf(result)?.splitRows ?? channel.splitRows,
     });
   } catch (e) {
     next(e);
@@ -724,6 +760,17 @@ async function handleCsv(req: Request, res: Response, next: NextFunction) {
     const f = parseFilter(req);
     const result = await generateRows(f);
     const { channel, header, rows } = result;
+    const mallSpec = mallSpecOf(result);
+    if (mallSpec) {
+      // 他連携先: 種別定義の形式(区切り・クォート・文字コード・拡張子)。分割されるときはZIP
+      const files = buildMallFiles(mallSpec, rows, timeStamp14());
+      const one = files.length === 1;
+      const name = one ? files[0].name : `${mallSpec.fileName(timeStamp14(), null)}.zip`;
+      res.setHeader("Content-Type", one ? mallContentType(mallSpec) : "application/zip");
+      res.setHeader("Content-Disposition", `attachment; filename="export.${one ? mallSpec.format.extension : "zip"}"; filename*=UTF-8''${encodeURIComponent(name)}`);
+      res.send(one ? files[0].body : await zipFiles(files));
+      return;
+    }
 
     const text =
       [header.map(csvField).join(","), ...rows.map((r) => r.map(csvField).join(","))].join(
@@ -803,6 +850,18 @@ const FS_SET_TYPES: Record<string, { members: FsSubFileType[]; zipName: string }
 // CF(シーリングファン)のサブCSVはFS_CF_SUB_SPLIT_ROWS。generateRowsが返すsubMeta(ファイル名・分割件数)を使う
 // CFのバリエーションセットは価格CSVなし(現行CFは選択肢登録・詳細登録・在庫の3種)。ZIP名もPL_接頭辞なし
 type GenerateResult = Awaited<ReturnType<typeof generateRows>>;
+function mallSpecOf(r: GenerateResult): MallFileSpec | undefined {
+  return "mallSpec" in r ? r.mallSpec : undefined;
+}
+// 他連携先のファイル名用タイムスタンプ yyyymmddHHMMSS(JST)
+function timeStamp14(): string {
+  return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" }).replace(/[-: ]/g, "").slice(0, 14);
+}
+async function zipFiles(files: Array<{ name: string; body: Buffer }>): Promise<Buffer> {
+  const zip = new JSZip();
+  for (const x of files) zip.file(x.name, x.body);
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
+}
 function subMetaOf(r: GenerateResult): { book: "PL" | "CF"; fileBase: string; splitRows: number } | undefined {
   return "subMeta" in r ? r.subMeta : undefined;
 }
@@ -835,6 +894,54 @@ async function runExportJob(job: ExportJob, f: Filter) {
       .toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" })
       .replace(/[-: ]/g, "")
       .slice(0, 12);
+    // 他連携先のセット(ボタン1回分の複数ファイル)・単体ファイル
+    const channelCode = (await prisma.channel.findUniqueOrThrow({ where: { id: f.channelId } })).code;
+    const mallSet = f.fileType && channelCode !== "futureshop" ? findMallSetSpec(channelCode, f.fileType) : undefined;
+    if (mallSet) {
+      const stamp14 = timeStamp14();
+      const files: Array<{ name: string; body: Buffer }> = [];
+      for (let mi = 0; mi < mallSet.members.length; mi++) {
+        const member = mallSet.members[mi];
+        const result = await generateRows({ ...f, fileType: member }, (phase, processed, total) => {
+          job.phase = `${member} (${mi + 1}/${mallSet.members.length}) ${phase}`;
+          job.processed = processed;
+          job.total = total;
+        });
+        const spec = mallSpecOf(result)!;
+        // 行が無いファイルは作らない(現行マクロも対象行が無ければ保存しない)
+        if (result.rows.length > 0) files.push(...buildMallFiles(spec, result.rows, stamp14));
+        await new Promise((r) => setImmediate(r));
+      }
+      job.phase = "ファイル作成中";
+      job.body = await zipFiles(files);
+      job.contentType = "application/zip";
+      job.filename = `${mallSet.zipName(stamp14)}.zip`;
+      job.status = "DONE";
+      job.phase = "完了";
+      return;
+    }
+    if (f.fileType && channelCode !== "futureshop") {
+      const result = await generateRows(f, (phase, processed, total) => {
+        job.phase = phase;
+        job.processed = processed;
+        job.total = total;
+      });
+      const spec = mallSpecOf(result)!;
+      job.phase = "ファイル作成中";
+      const files = buildMallFiles(spec, result.rows, timeStamp14());
+      if (files.length === 1) {
+        job.body = files[0].body;
+        job.contentType = mallContentType(spec);
+        job.filename = files[0].name;
+      } else {
+        job.body = await zipFiles(files);
+        job.contentType = "application/zip";
+        job.filename = `${spec.fileName(timeStamp14(), null)}.zip`;
+      }
+      job.status = "DONE";
+      job.phase = "完了";
+      return;
+    }
     const set = f.fileType ? FS_SET_TYPES[f.fileType] : undefined;
     if (set) {
       // セット出力: メンバーごとにCSVを生成し(999行分割込み)ZIPにまとめる(現行のExcelボタン1回分)
@@ -909,6 +1016,17 @@ async function runExportJob(job: ExportJob, f: Filter) {
     job.error = e instanceof Error ? e.message : String(e);
   }
 }
+
+// 連携先ごとの出力種別(futureshop以外。エクスポート画面の選択肢)
+exportsRouter.get("/file-types", async (req, res, next) => {
+  try {
+    const channelId = z.coerce.number().int().parse(req.query.channelId);
+    const channel = await prisma.channel.findUniqueOrThrow({ where: { id: channelId } });
+    res.json({ fileTypes: mallFileTypeOptions(channel.code) });
+  } catch (e) {
+    next(e);
+  }
+});
 
 exportsRouter.post("/jobs", (req, res, next) => {
   try {

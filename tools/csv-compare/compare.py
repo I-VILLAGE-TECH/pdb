@@ -27,17 +27,20 @@ def natural_key(path):
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", path)]
 
 
-def read_csv(paths):
+def read_csv(paths, delimiter=None, header_row=1, encoding="cp932"):
+    """header_row: ヘッダー行の位置(1始まり)。それより前の行(Amazonのテンプレート行等)は読み飛ばす"""
     header = None
     rows = []
     bad = 0
     for p in paths:
         raw = open(p, "rb").read()
-        text = raw.decode("cp932", errors="replace")
+        text = raw.decode(encoding, errors="replace")
         bad += text.count("\ufffd")
         if text.startswith("\ufeff"):
             text = text[1:]
-        recs = list(csv.reader(io.StringIO(text, newline="")))
+        delim = delimiter or ("\t" if p.lower().endswith(".txt") else ",")
+        recs = list(csv.reader(io.StringIO(text, newline=""), delimiter=delim))
+        recs = recs[header_row - 1:]
         if not recs:
             continue
         if header is None:
@@ -80,10 +83,14 @@ def main():
     ap.add_argument("--only-common", action="store_true", help="両方にあるキーのみ比較(片側のみのキーは件数だけ表示)")
     ap.add_argument("--examples", type=int, default=3, help="列ごとの差分例の件数")
     ap.add_argument("--json", help="全差分の保存先")
+    ap.add_argument("--delimiter", help="区切り文字(既定: .txt はタブ、それ以外はカンマ)。タブは '\\t' で指定")
+    ap.add_argument("--header-row", type=int, default=1, help="ヘッダー行の位置(1始まり。Amazonのフラットファイルは3等)")
+    ap.add_argument("--encoding", default="cp932", help="文字コード(既定 cp932)")
     a = ap.parse_args()
+    delim = a.delimiter.replace("\\t", "\t") if a.delimiter else None
 
-    eh, er, ebad = read_csv(expand(a.expected))
-    ah, ar, abad = read_csv(expand(a.actual))
+    eh, er, ebad = read_csv(expand(a.expected), delim, a.header_row, a.encoding)
+    ah, ar, abad = read_csv(expand(a.actual), delim, a.header_row, a.encoding)
     print(f"expected: {len(er)} rows / {len(eh)} cols (不正バイト {ebad})")
     print(f"actual  : {len(ar)} rows / {len(ah)} cols (不正バイト {abad})")
     if eh != ah:

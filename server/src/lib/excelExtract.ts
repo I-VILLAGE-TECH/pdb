@@ -81,6 +81,13 @@ function sheetRows(wb: XLSX.WorkBook, name: string): Row[] {
   return XLSX.utils.sheet_to_json<Row>(ws, { header: 1, raw: true, defval: null });
 }
 
+// セルの生値(数値/文字列の型を保持。日付はISO文字列)。楽天CSVなど VBA の Cell.Value をそのまま文字列化する出力用
+function cellRaw(v: Cell): string | number | boolean | null {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString();
+  return v;
+}
+
 // ---------- ペンダントライト（.xlsm） ----------
 
 const PL_SHEET = "ペンダントライト一覧";
@@ -111,6 +118,8 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
   // データ行の直後にID(メーカー記号+通番)だけ数式で埋まったテンプレート行が続く箇所がある。
   // 現行VBAの関連商品(独自コメント(8))はこの行も範囲判定に含むため、直前の商品にそのID値を記録して再現する
   const templateFollows = new Map<string, string>();
+  // 楽天CSV(★rakuten.bas)用: メインシートの行ごとの生セル(A/D/E/S/AW/AC)とシート上の行位置。商品(親)単位にまとめる
+  const plRakutenRows = new Map<string, Array<Record<string, unknown>>>();
   const sheets = [PL_SHEET, ...(wb.SheetNames.includes(PL_OTHER_SHEET) ? [PL_OTHER_SHEET] : [])];
   // シートごとのA1セル(Variationモード/Optionモード)。FS商品CSVの在庫管理・現在在庫数が切り替わる
   const sheetModes = new Map<string, string | null>();
@@ -130,6 +139,19 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         continue;
       }
       lastParentCode = parentCode;
+      if (sheetName === PL_SHEET) {
+        const list = plRakutenRows.get(parentCode) ?? [];
+        list.push({
+          row: ri + 1, // シート上の行番号(楽天CSVはシート順に出す)
+          a: cellRaw(row[0]), // データ投入フラグ
+          d: cellRaw(row[3]), // 入荷待ち
+          e: cellRaw(row[4]), // 販売終了
+          s: cellRaw(row[18]), // fazoo管理型番(ユニーク)=楽天の商品管理番号
+          aw: cellRaw(row[48]), // 販売価格合計
+          ac: cellRaw(row[28]), // 定価(税込)
+        });
+        plRakutenRows.set(parentCode, list);
+      }
       const makerCode = s(row[7]);
       if (makerCode && !makers.has(makerCode)) {
         makers.set(makerCode, {
@@ -285,6 +307,7 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         manualKeywords: s(p[130]),
         attachableCount: numInt(p[157]),
         plTemplateRelKey: templateFollows.get(parentCode),
+        rakutenRows: plRakutenRows.get(parentCode) ?? [], // 楽天CSV用の行ごとの生セル(メインシートのみ)
         itemType: s(p[6]), // 商品種別(PL/CL/CF/LR/AC/OP)。FS商品名の「製○○」の語尾に使う
         sheet: g.sheet === PL_OTHER_SHEET ? "other" : undefined, // その他別管理一覧FSの商品
         sheetMode: sheetModes.get(g.sheet), // シートのA1セル(Variationモード/Optionモード)
@@ -387,6 +410,52 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
   const rows = sheetRows(wb, CF_SHEET);
   const makers = new Map<string, MakerJson>();
   const products: ProductJson[] = [];
+
+  // 楽天_バリエーションマスタ(rakuten.bas の rakuten_variation_csv が A列を商品コードで Find して参照)。
+  // Find は大文字小文字を区別しない完全一致のため、キーは大文字化。行順(シート順)を保持
+  const rakutenMaster = new Map<string, Array<Record<string, unknown>>>();
+  if (wb.SheetNames.includes("楽天_バリエーションマスタ")) {
+    const mrows = sheetRows(wb, "楽天_バリエーションマスタ");
+    for (let ri = 1; ri < mrows.length; ri++) {
+      const r = mrows[ri] ?? [];
+      if (r[0] == null || r[0] === "") continue;
+      const key = String(cellRaw(r[0])).toUpperCase();
+      const list = rakutenMaster.get(key) ?? [];
+      // A:商品コード B:商品名 F:横軸選択肢 H:縦軸選択肢 J:在庫数 U:楽天 倉庫指定
+      list.push({ a: cellRaw(r[0]), b: cellRaw(r[1]), f: cellRaw(r[5]), h: cellRaw(r[7]), j: cellRaw(r[9]), u: cellRaw(r[20]) });
+      rakutenMaster.set(key, list);
+    }
+  }
+
+  // Amazon ASIN一覧(Amazon作成用.bas の DataUproadCheck / DataUproadCheckSD が A列=出品者SKU の完全一致で参照。
+  // 同じSKUが複数あれば最後の行。重複は CheckAsinOverlapIV/SD で停止)。I:商品IDタイプ N:商品ID P:フルフィルメント・チャンネル
+  type AsinEntry = { id: string | number | boolean | null; type: string | number | boolean | null; ch: string | number | boolean | null; dup?: true };
+  const readAsinSheet = (name: string): Map<string, AsinEntry> => {
+    const m = new Map<string, AsinEntry>();
+    if (!wb.SheetNames.includes(name)) return m;
+    const arows = sheetRows(wb, name);
+    for (let ri = 1; ri < arows.length; ri++) {
+      const r = arows[ri] ?? [];
+      if (r[0] == null || r[0] === "") continue;
+      const key = String(cellRaw(r[0]));
+      const prev = m.get(key);
+      m.set(key, { id: cellRaw(r[13]), type: cellRaw(r[8]), ch: cellRaw(r[15]), ...(prev ? { dup: true as const } : {}) });
+    }
+    return m;
+  };
+  const amazonAsinIv = readAsinSheet("Amazon(IV-ASIN)");
+  const amazonAsinSd = readAsinSheet("Amazon(SD-ASIN)");
+  const amazonAsinOf = (code: string) => {
+    const pick = (m: Map<string, AsinEntry>, prefix: string) => {
+      const o: Record<string, AsinEntry> = {};
+      for (const sfx of ["", "v0", "v1", "v2", "v3"]) {
+        const e = m.get(`${prefix}${code}${sfx}`);
+        if (e) o[`${prefix}${code}${sfx}`] = e;
+      }
+      return o;
+    };
+    return { iv: pick(amazonAsinIv, ""), sd: pick(amazonAsinSd, "SD-") };
+  };
 
   for (let ri = 1; ri < rows.length; ri++) {
     const row: Row = [...(rows[ri] ?? [])];
@@ -554,6 +623,36 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         // FS商品画像ALT用: 画像データM1・M2の生セル。実シートは111列目に「ダクトレール取り付け」が挿入されており、
         // M1/M2 は113/114列目(Common.bas の INPUT_COL画像データM1=112 より1列右)。ヘッダー名で確認済み
         fsMainImageCells: [rawS(row[112]), rawS(row[113])],
+        // 楽天CSV(rakuten.bas)用の生セル。列は英字直指定(A/C/P/AD/AE/AF/AO/AU。いずれも挿入列(110)より左)
+        rakutenCells: {
+          a: cellRaw(row[0]), // 商品登録フラグ
+          c: cellRaw(row[2]), // 入荷予定(生産ステータス)
+          p: cellRaw(row[15]), // ID商品管理
+          ad: cellRaw(row[29]), // 型番_バリエーション1
+          ae: cellRaw(row[30]), // 型番_バリエーション2
+          af: cellRaw(row[31]), // 型番_バリエーション3
+          ao: cellRaw(row[40]), // 定価(税込)=表示価格("O"=オープン価格)
+          au: cellRaw(row[46]), // 販売価格1(税込)
+        },
+        rakutenVariationMaster: rakutenMaster.get(String(cellRaw(row[15]) ?? "").toUpperCase()) ?? [], // 楽天_バリエーションマスタの一致行
+        // Amazon出品ファイル(Amazon作成用.bas)用の生セル。型(数値/文字列)を保持(VBAの空セル=0扱い・文字列比較の再現用)
+        amazonCells: {
+          registerFlag: cellRaw(row[0]), // 商品登録フラグ
+          reserveStart: cellRaw(row[7]), // 予約・セール開始(入荷予定日)
+          reserveEnd: cellRaw(row[8]), // 予約・セール終了
+          width: cellRaw(row[32]), // 幅
+          height: cellRaw(row[33]), // 高さ
+          height2: cellRaw(row[34]), // 高さ2
+          weight: cellRaw(row[36]), // 重量
+          priceControl: cellRaw(row[38]), // 価格統制
+          cost: cellRaw(row[44]), // 仕入値
+          amazonPrice: cellRaw(row[47]), // 販売価格2(Amazon価格)
+          normalLeadTime: cellRaw(row[98]), // 通常納期
+          variationLead: [cellRaw(row[99]), cellRaw(row[100]), cellRaw(row[101])], // バリエーション1追加納期1〜3
+          install: [cellRaw(row[105]), cellRaw(row[106]), cellRaw(row[107]), cellRaw(row[108]), cellRaw(row[109])], // 取付1〜5
+          amazonMainImage: cellRaw(row[141]), // Amazonメイン画像用(挿入列より右のため INPUT_COL=141 の1列右)
+        },
+        amazonAsin: amazonAsinOf(code), // Amazon(IV-ASIN)/(SD-ASIN)シートの一致行(SKU・v0〜v3。SDは「SD-」付き)
       },
       channelPrices: amazonPrice ? [{ channelCode: "amazon", price: amazonPrice }] : [],
       fanAttrs: {
