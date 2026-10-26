@@ -1,8 +1,8 @@
-// 画像ファイルの保存先抽象化
+// ファイルの保存先抽象化(商品画像・取込用のExcelブック)
 // ローカル/Docker: UPLOADS_DIR（既定 ./uploads）に保存
 // 本番(GCP): GCS_BUCKET が設定されていれば Google Cloud Storage に保存
 // 配信はどちらも GET /uploads/<key> でアプリ経由（認証つき）
-import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { mkdir, writeFile, unlink, readFile } from "node:fs/promises";
 import { createReadStream, existsSync } from "node:fs";
 import path from "node:path";
 import type { Readable } from "node:stream";
@@ -37,6 +37,21 @@ export function streamFile(key: string): Readable | null {
   const filePath = path.join(localRoot, key);
   if (!existsSync(filePath)) return null;
   return createReadStream(filePath);
+}
+
+// ファイル全体を読む(取込用のExcelブック等)。無ければ null
+export async function readFileBuffer(key: string): Promise<Buffer | null> {
+  assertSafeKey(key);
+  if (gcs && bucketName) {
+    const file = gcs.bucket(bucketName).file(key);
+    const [exists] = await file.exists();
+    if (!exists) return null;
+    const [buf] = await file.download();
+    return buf;
+  }
+  const filePath = path.join(localRoot, key);
+  if (!existsSync(filePath)) return null;
+  return readFile(filePath);
 }
 
 export async function removeFile(key: string): Promise<void> {

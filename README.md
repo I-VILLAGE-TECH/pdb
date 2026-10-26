@@ -51,6 +51,11 @@ product-db/
   （`ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD` 環境変数で上書き可。**初回ログイン後に必ず変更**）
 - ユーザーは削除せず**無効化**（履歴保全。無効化時に既存セッションも破棄）。自分自身の権限変更・無効化は不可
 
+## 操作マニュアル
+
+利用者向けの操作説明はアプリ内のサイドメニュー「ヘルプ」（`/manual`、`web/src/pages/Manual.tsx`）。
+画面や運用を変えたときは、このページも合わせて更新する。
+
 ## ローカル環境構築・実行方法
 
 ### 前提
@@ -139,7 +144,8 @@ npm run dev               # /api・/uploads は :8080 へプロキシ（vite.con
 - **全入れ替え**: 取込後、同一種別でファイルに無い既存商品を**論理削除**（deleted_at。物理削除しない）。
   再度ファイルに現れた商品は論理削除が自動解除される
 - バックグラウンドジョブ＋進捗表示。解析は `server/src/lib/excelExtract.ts`（tools/import/extract.py と同一マッピングのTS移植）
-- 注意: ジョブ状態はプロセス内メモリ管理のため、Cloud Runで複数インスタンス構成にする場合はジョブテーブル化が必要
+- ジョブの状態は DB（`import_jobs`）に記録する。ローカルは同じプロセスの中で実行し、GCP では Cloud Run ジョブ `product-db-import` で実行する（環境変数 `IMPORT_JOB_NAME` で切替。[DEPLOY.md](DEPLOY.md)）
+- 取込中は次の取込を受け付けない（409）
 
 ## 初期移行（Excel 2ブック → DB・CLI版）
 
@@ -162,21 +168,19 @@ npm run db:import
 
 ## 本番（GCP）
 
-Cloud Run（1サービス: API + SPA配信）+ Cloud SQL（PostgreSQL 16）+ Artifact Registry。
-DATABASE_URL は Secret Manager 経由で注入、Cloud SQL へは unix ソケット接続。
+構成は report-app と同じ（Cloud Run + Cloud SQL + GCS + Secret Manager。GCPプロジェクトも同じ）。Cloud SQL は product-db 専用のインスタンスを持つ。
+**同じプロジェクトの report-app に影響を与えないためのルールと手順は [DEPLOY.md](DEPLOY.md) を参照。**
 
 ```bash
-# 初回のみ: インフラ構築
-cd infra
-cp terraform.tfvars.example terraform.tfvars   # project_id 等を記入
-terraform init && terraform apply
+# 初回のみ: インフラ構築（plan で追加のみであることを確認してから apply）
+cd infra && cp terraform.tfvars.example terraform.tfvars && terraform init && terraform plan
 
-# デプロイ（ビルド → プッシュ → Cloud Run）
+# デプロイ（ビルド → バックアップ → マイグレーション・シード → Cloud Run）
 ./deploy.sh
 ```
 
-マイグレーションはコンテナ起動時に `prisma migrate deploy` で自動適用。
-Cloud Run は既定で IAM 認証（`invoker_member`）。全公開する場合はアプリ側に認証を実装のうえ `allUsers` に変更する。
+マイグレーションはコンテナ起動時ではなく deploy.sh で実行する。Cloud Run は report-app と同じく公開し、アプリのログインで保護する。
+Excel 取込は Cloud Run ジョブで実行し、CSV 出力はリクエストの中で生成して返す（サービスは 512MiB・リクエスト処理中のみ課金）。
 
 ## API 概要
 
@@ -202,6 +206,8 @@ Cloud Run は既定で IAM 認証（`invoker_member`）。全公開する場合�
 | GET | `/api/dashboard` | 集計 |
 
 ## 未実装（設計書の次フェーズ）
+
+残タスクの一覧・状態は `documents/02_検討事項/01_全体/07_開発残タスク.md` で管理している。
 
 - 連携アダプタ実装（futureshop CSV+FTP / 在庫API、Yahoo・楽天・Amazon・NE）。
   `POST /api/sync/reflect` に `send/awaitResult/fetchRemote` を差し込む構造は用意済み

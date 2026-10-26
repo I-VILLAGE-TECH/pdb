@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { LoadingStatus, ProgressBar, Spinner } from "../components/Loading";
 
 type ImportJob = {
   id: string;
   fileName: string;
   bookType?: "PL" | "CF";
   mode: "diff" | "replace";
-  status: "PARSING" | "RUNNING" | "DONE" | "ERROR";
+  status: "QUEUED" | "PARSING" | "RUNNING" | "DONE" | "ERROR";
   total: number;
   processed: number;
   created: number;
@@ -19,6 +20,7 @@ type ImportJob = {
 };
 
 const STATUS_LABEL: Record<string, string> = {
+  QUEUED: "起動待ち", // GCPでは取込用のCloud Runジョブの起動に数十秒かかる
   PARSING: "解析中",
   RUNNING: "取込中",
   DONE: "完了",
@@ -43,6 +45,7 @@ export function ExcelImport() {
   const [history, setHistory] = useState<ImportJob[]>([]);
   const [error, setError] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 画像一括アップロード
@@ -130,6 +133,7 @@ export function ExcelImport() {
       return;
     }
     setUploading(true);
+    setUploadStartedAt(Date.now());
     setError("");
     setCurrentJob(null);
     try {
@@ -152,6 +156,7 @@ export function ExcelImport() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setUploading(false);
+      setUploadStartedAt(null);
     }
   }
 
@@ -203,10 +208,30 @@ export function ExcelImport() {
         <button
           type="submit"
           className="primary"
-          disabled={!file || uploading || currentJob?.status === "RUNNING" || currentJob?.status === "PARSING"}
+          disabled={
+            !file ||
+            uploading ||
+            currentJob?.status === "QUEUED" ||
+            currentJob?.status === "RUNNING" ||
+            currentJob?.status === "PARSING"
+          }
         >
-          {uploading ? "アップロード中…" : "取込を実行"}
+          {uploading ? (
+            <>
+              <Spinner />
+              アップロード中…
+            </>
+          ) : (
+            "取込を実行"
+          )}
         </button>
+        {uploading && (
+          <LoadingStatus
+            message="ブックをアップロードしています"
+            startedAt={uploadStartedAt}
+            note="ファイルが大きいと数十秒かかることがあります。画面を閉じずにお待ちください"
+          />
+        )}
       </form>
 
       {currentJob && (
@@ -222,14 +247,27 @@ export function ExcelImport() {
               </span>
             )}
           </h3>
-          {(currentJob.status === "RUNNING" || currentJob.status === "PARSING") && (
+          {(currentJob.status === "QUEUED" || currentJob.status === "RUNNING" || currentJob.status === "PARSING") && (
             <>
-              <div className="progress-bar">
-                <div className="progress-fill" style={{ width: `${progress}%` }} />
-              </div>
-              <div className="muted" style={{ marginTop: 6 }}>
-                {currentJob.processed.toLocaleString()} / {currentJob.total.toLocaleString()} 件（{progress}%）
-              </div>
+              {/* 件数が分かるまで(起動待ち・解析中)は流れるバー、取込中は%に縞模様を重ねて動きを見せる */}
+              <ProgressBar percent={currentJob.status === "RUNNING" && currentJob.total > 0 ? progress : null} />
+              <LoadingStatus
+                message={
+                  currentJob.status === "QUEUED"
+                    ? "取込処理を起動しています"
+                    : currentJob.status === "PARSING"
+                      ? "ブックを解析しています"
+                      : `取込中 ${currentJob.processed.toLocaleString()} / ${currentJob.total.toLocaleString()} 件（${progress}%）`
+                }
+                startedAt={currentJob.startedAt}
+                note={
+                  currentJob.status === "QUEUED"
+                    ? "起動に数十秒かかることがあります"
+                    : currentJob.status === "PARSING"
+                      ? "ブックの大きさにより1分程度かかります"
+                      : "全件で数分かかります。この画面を閉じても取込は続きます"
+                }
+              />
             </>
           )}
           {currentJob.status === "DONE" && (
@@ -277,17 +315,11 @@ export function ExcelImport() {
         </div>
         {imageBusy && (
           <>
-            <div className="progress-bar" style={{ marginBottom: 6 }}>
-              <div
-                className="progress-fill"
-                style={{
-                  width: `${imageProgress.total ? Math.round((imageProgress.done / imageProgress.total) * 100) : 0}%`,
-                }}
-              />
-            </div>
-            <div className="muted" style={{ marginBottom: 8 }}>
-              {imageProgress.done} / {imageProgress.total} ファイル
-            </div>
+            <ProgressBar
+              percent={imageProgress.total ? Math.round((imageProgress.done / imageProgress.total) * 100) : null}
+              style={{ marginBottom: 6 }}
+            />
+            <LoadingStatus message={`画像をアップロードしています ${imageProgress.done} / ${imageProgress.total} ファイル`} />
           </>
         )}
         <button type="submit" className="primary" disabled={imageFiles.length === 0 || imageBusy}>

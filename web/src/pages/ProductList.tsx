@@ -13,6 +13,7 @@ import {
 import { useAuth } from "../lib/AuthContext";
 import { clearMarks, getMarks, toggleMark } from "../lib/marks";
 import { DateRangeFilter, MultiFilter, RangeFilter, TextFilter, type FilterOption } from "../components/filters";
+import { LoadingArea, useLoading } from "../components/Loading";
 
 const statusBadge: Record<string, string> = {
   ACTIVE: "green",
@@ -485,6 +486,9 @@ export function ProductList({ fixedCategory }: ProductListProps) {
   }
 
   // ---- データ取得（カラム絞り込みがあるため常にPOST /search） ----
+  const { loading, since, track } = useLoading();
+  // 絞り込みを続けて変えたとき、遅れて返ってきた古い結果で上書きしないよう最新の要求だけを反映する
+  const requestSeq = useRef(0);
   const load = useCallback(() => {
     // 種別は常にタブが決める。カラム絞り込み側に categories が紛れても無視する
     // （ペンダントライトのタブにシーリングファンが混ざる事故を防ぐ）
@@ -496,10 +500,15 @@ export function ProductList({ fixedCategory }: ProductListProps) {
       ...restFilters,
     };
     if (markedOnly) body.productCodes = user ? [...getMarks(user.id)] : [];
-    api<Paged<Product>>("/api/products/search", { method: "POST", body: JSON.stringify(body) })
-      .then(setData)
-      .catch((e) => setError(e.message));
-  }, [params, page, sort, order, colFilters, markedOnly, user, tabCategories]);
+    const seq = ++requestSeq.current;
+    track(api<Paged<Product>>("/api/products/search", { method: "POST", body: JSON.stringify(body) }))
+      .then((d) => {
+        if (seq === requestSeq.current) setData(d);
+      })
+      .catch((e) => {
+        if (seq === requestSeq.current) setError(e.message);
+      });
+  }, [params, page, sort, order, colFilters, markedOnly, user, tabCategories, track]);
 
   useEffect(() => {
     load();
@@ -746,6 +755,7 @@ export function ProductList({ fixedCategory }: ProductListProps) {
 
       {error && <div className="error">{error}</div>}
 
+      <LoadingArea loading={loading} since={since} hasData={!!data} message="商品一覧を読み込んでいます">
       <div className="table-scroll">
       <table className="table-nowrap">
         <thead>
@@ -889,7 +899,7 @@ export function ProductList({ fixedCategory }: ProductListProps) {
             )}
             </React.Fragment>
           ))}
-          {data && data.items.length === 0 && (
+          {data && data.items.length === 0 && !loading && (
             <tr>
               <td colSpan={colCount} className="muted">
                 該当する商品がありません
@@ -899,6 +909,7 @@ export function ProductList({ fixedCategory }: ProductListProps) {
         </tbody>
       </table>
       </div>
+      </LoadingArea>
 
       {data && (
         <div className="pagination">

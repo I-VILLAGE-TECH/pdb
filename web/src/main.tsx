@@ -15,6 +15,7 @@ import { SyncStatus } from "./pages/SyncStatus";
 import { CsvExport } from "./pages/CsvExport";
 import { Users } from "./pages/Users";
 import { ExcelImport } from "./pages/ExcelImport";
+import { Manual } from "./pages/Manual";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -37,6 +38,7 @@ const router = createBrowserRouter([
       { path: "exports", element: <CsvExport /> },
       { path: "users", element: <Users /> },
       { path: "imports", element: <ExcelImport /> },
+      { path: "manual", element: <Manual /> },
     ],
   },
 ]);

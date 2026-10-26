@@ -706,8 +706,18 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
 
 // ---------- エントリポイント（シート名でブック種別を自動判定） ----------
 
+// 取込で読むシート。ブックには50以上のシートがあるため、これ以外は解析しない(メモリ節約。抽出結果は全シート解析時と同一を確認済み)
+const IMPORT_SHEETS = [
+  PL_SHEET,
+  PL_OTHER_SHEET,
+  CF_SHEET,
+  "楽天_バリエーションマスタ",
+  "Amazon(IV-ASIN)",
+  "Amazon(SD-ASIN)",
+];
+
 export function extractWorkbook(buffer: Buffer): ExtractResult {
-  const wb = XLSX.read(buffer, { type: "buffer", cellDates: true });
+  const wb = XLSX.read(buffer, { type: "buffer", cellDates: true, sheets: IMPORT_SHEETS });
   if (wb.SheetNames.includes(CF_SHEET)) return extractCf(wb);
   if (wb.SheetNames.includes(PL_SHEET)) return extractPl(wb);
   throw new Error(

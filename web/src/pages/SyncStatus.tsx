@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, DIFF_LABEL, Paged } from "../lib/api";
+import { LoadingArea, useLoading } from "../components/Loading";
 
 type ChannelLite = { id: number; code: string; name: string; active: boolean };
 
@@ -42,10 +43,11 @@ export function SyncStatus() {
       .catch((e) => setError(e.message));
   }, []);
 
+  const { loading, since, track } = useLoading();
   const loadLinks = useCallback(() => {
     const q = new URLSearchParams();
     if (channelId) q.set("channelId", String(channelId));
-    api<Paged<SyncLink>>(`/api/sync/links?${q}`)
+    track(api<Paged<SyncLink>>(`/api/sync/links?${q}`))
       .then((d) => {
         setLinks(d);
         setSelected(new Set());
@@ -54,7 +56,7 @@ export function SyncStatus() {
     api<Paged<SyncJob>>("/api/sync/jobs")
       .then(setJobs)
       .catch(() => {});
-  }, [channelId]);
+  }, [channelId, track]);
 
   useEffect(() => {
     loadLinks();
@@ -157,53 +159,55 @@ export function SyncStatus() {
       {error && <div className="error">{error}</div>}
       {message && <div style={{ color: "#166534", padding: "8px 0" }}>{message}</div>}
 
-      <table>
-        <thead>
-          <tr>
-            <th style={{ width: 32 }}></th>
-            <th>連携先</th>
-            <th>商品コード</th>
-            <th>SKU</th>
-            <th>商品名</th>
-            <th>差分</th>
-            <th>DB更新</th>
-            <th>最終反映</th>
-          </tr>
-        </thead>
-        <tbody>
-          {links?.items.map((l) => (
-            <tr key={l.id}>
-              <td>
-                <input
-                  type="checkbox"
-                  checked={selected.has(l.id)}
-                  onChange={() => toggle(l.id)}
-                />
-              </td>
-              <td>{l.channel.name}</td>
-              <td>
-                <Link to={`/products/${l.product.id}`}>{l.product.productCode}</Link>
-              </td>
-              <td>{l.variation.skuCode}</td>
-              <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {l.product.name}
-              </td>
-              <td>{DIFF_LABEL[l.diffStatus] ?? l.diffStatus}</td>
-              <td className="muted">{new Date(l.product.updatedAt).toLocaleDateString("ja-JP")}</td>
-              <td className="muted">
-                {l.lastSentAt ? new Date(l.lastSentAt).toLocaleString("ja-JP") : "-"}
-              </td>
-            </tr>
-          ))}
-          {links && links.items.length === 0 && (
+      <LoadingArea loading={loading} since={since} hasData={!!links} message="連携状況を読み込んでいます">
+        <table>
+          <thead>
             <tr>
-              <td colSpan={8} className="muted">
-                差分はありません。「差分を再計算」で連携リンクを更新できます。
-              </td>
+              <th style={{ width: 32 }}></th>
+              <th>連携先</th>
+              <th>商品コード</th>
+              <th>SKU</th>
+              <th>商品名</th>
+              <th>差分</th>
+              <th>DB更新</th>
+              <th>最終反映</th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {links?.items.map((l) => (
+              <tr key={l.id}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selected.has(l.id)}
+                    onChange={() => toggle(l.id)}
+                  />
+                </td>
+                <td>{l.channel.name}</td>
+                <td>
+                  <Link to={`/products/${l.product.id}`}>{l.product.productCode}</Link>
+                </td>
+                <td>{l.variation.skuCode}</td>
+                <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {l.product.name}
+                </td>
+                <td>{DIFF_LABEL[l.diffStatus] ?? l.diffStatus}</td>
+                <td className="muted">{new Date(l.product.updatedAt).toLocaleDateString("ja-JP")}</td>
+                <td className="muted">
+                  {l.lastSentAt ? new Date(l.lastSentAt).toLocaleString("ja-JP") : "-"}
+                </td>
+              </tr>
+            ))}
+            {links && links.items.length === 0 && (
+              <tr>
+                <td colSpan={8} className="muted">
+                  差分はありません。「差分を再計算」で連携リンクを更新できます。
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </LoadingArea>
       {links && links.total > links.perPage && (
         <div className="pagination">
           全 {links.total.toLocaleString()} 件中 {links.items.length} 件を表示

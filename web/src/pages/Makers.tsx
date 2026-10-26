@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, Maker } from "../lib/api";
+import { LoadingArea, useLoading } from "../components/Loading";
 import { Modal } from "../components/filters";
 
 export function Makers() {
@@ -9,9 +10,10 @@ export function Makers() {
   const [form, setForm] = useState({ makerCode: "", nameJp: "", nameEn: "", imgFolder: "" });
   const [saving, setSaving] = useState(false);
 
+  const { loading, since, track } = useLoading();
   const load = useCallback(() => {
-    api<Maker[]>("/api/makers").then(setMakers).catch((e) => setError(e.message));
-  }, []);
+    track(api<Maker[]>("/api/makers")).then(setMakers).catch((e) => setError(e.message));
+  }, [track]);
 
   useEffect(() => {
     load();
@@ -92,28 +94,30 @@ export function Makers() {
       </div>
       {error && <div className="error">{error}</div>}
 
-      <table>
-        <thead>
-          <tr>
-            <th style={{ width: 90 }}>コード</th>
-            <th>メーカー名</th>
-            <th>英字名</th>
-            <th>画像フォルダ</th>
-            <th style={{ width: 90 }}>商品数</th>
-          </tr>
-        </thead>
-        <tbody>
-          {makers.map((m) => (
-            <tr key={m.id}>
-              <td>{m.makerCode}</td>
-              <td>{editableCell(m, "nameJp", true)}</td>
-              <td>{editableCell(m, "nameEn")}</td>
-              <td>{editableCell(m, "imgFolder")}</td>
-              <td className="num">{m._count?.products ?? 0}</td>
+      <LoadingArea loading={loading} since={since} hasData={makers.length > 0} message="メーカーを読み込んでいます">
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 90 }}>コード</th>
+              <th>メーカー名</th>
+              <th>英字名</th>
+              <th>画像フォルダ</th>
+              <th style={{ width: 90 }}>商品数</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {makers.map((m) => (
+              <tr key={m.id}>
+                <td>{m.makerCode}</td>
+                <td>{editableCell(m, "nameJp", true)}</td>
+                <td>{editableCell(m, "nameEn")}</td>
+                <td>{editableCell(m, "imgFolder")}</td>
+                <td className="num">{m._count?.products ?? 0}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </LoadingArea>
 
       {showAdd && (
         <Modal title="メーカー追加" onClose={() => setShowAdd(false)}>

@@ -1,5 +1,11 @@
-project_id     = "your-gcp-project-id"
-invoker_member = "user:you@example.com"
-# region       = "asia-northeast1"
-# service_name = "product-db"
-# db_tier      = "db-f1-micro"
+# cp terraform.tfvars.example terraform.tfvars して値を入れる(terraform.tfvars は git 管理外)
+project_id     = "iv-product-db"
+admin_password = "change-me"
+
+# 以下は既定値のままでよい
+# service_name   = "product-db"   # Cloud SQL は product-db-db(専用インスタンス)、DB・ユーザーは product-db
+# db_tier        = "db-f1-micro"
+# invoker_member = "allUsers"     # report-app と同じ(アプリのログインで保護)
+
+# 独自ドメイン(report-app のゾーン hvls.i-village.co.jp の配下)。最初は空のままデプロイし、後で設定する
+# custom_domain = "product.hvls.i-village.co.jp"

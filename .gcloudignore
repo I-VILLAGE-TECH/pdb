@@ -1,0 +1,9 @@
+# gcloud builds submit でアップロードしないもの
+# tmp/(現行ブック・正解CSV = 業務データ)、node_modules、ローカルの状態ファイル等は .gitignore と同じく除外する
+.gcloudignore
+.git
+.gitignore
+#!include:.gitignore
+tmp/
+**/node_modules/
+uploads/

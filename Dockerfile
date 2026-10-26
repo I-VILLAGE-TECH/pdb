@@ -33,4 +33,6 @@ COPY server/prisma ./prisma
 COPY --from=web-build /web/dist ./public
 
 EXPOSE 8080
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# マイグレーション・シードは起動時には行わない(コールドスタート短縮のため deploy.sh 側で実行。report-app と同じ)
+# ローカルの docker compose は compose 側の command でマイグレーションを実行する
+CMD ["node", "dist/index.js"]

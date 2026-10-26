@@ -125,6 +125,9 @@ model Maker {
   imgFolder String? @map("img_folder") // 画像保存フォルダ名
   sortLevel Int     @default(999) @map("sort_level") // 並び順レベル
   aliases   Json?   // 別名マッピング（hanwa→LifeOnProducts等）
+  // シーリングファン(CF)の出力で使う用途別の表記(現行マクロ Setメーカー名 の区分 2〜5, 7〜16。区分1=nameJp・6=nameEn)。
+  // キーは区分番号の文字列。画面(マスタ管理)で管理する。初期値は seed-maker-names が未設定のメーカーにだけ入れる
+  cfNotations Json? @map("cf_notations")
 
   products Product[]
 

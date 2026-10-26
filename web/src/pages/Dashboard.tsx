@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, CATEGORY_LABEL, STATUS_LABEL } from "../lib/api";
+import { LoadingStatus } from "../components/Loading";
 
 type DashboardData = {
   byCategory: Array<{ category: string; _count: number }>;
@@ -21,13 +21,14 @@ type DashboardData = {
 export function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState("");
+  const [startedAt] = useState(() => Date.now());
 
   useEffect(() => {
     api<DashboardData>("/api/dashboard").then(setData).catch((e) => setError(e.message));
   }, []);
 
   if (error) return <div className="error">{error}</div>;
-  if (!data) return <div className="muted">読み込み中…</div>;
+  if (!data) return <LoadingStatus message="集計を読み込んでいます" startedAt={startedAt} />;
 
   const totalProducts = data.byCategory.reduce((a, c) => a + c._count, 0);
 
@@ -53,12 +54,7 @@ export function Dashboard() {
           <div className="value">{data.makerCount}</div>
           <div className="label">メーカー数</div>
         </div>
-        <div className="stat-card">
-          <div className="value">{data.pendingLinks.toLocaleString()}</div>
-          <div className="label">
-            <Link to="/sync">未反映の連携差分</Link>
-          </div>
-        </div>
+        {/* 「未反映の連携差分」(連携状況画面へのリンク)は Phase2 で表示する */}
       </div>
 
       <div className="panel">

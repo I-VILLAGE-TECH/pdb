@@ -1,10 +1,17 @@
-// Excelインポートのジョブ実行（バックグラウンド）と進捗管理
+// Excelインポートのジョブ実行と進捗管理
 // 差分更新: 商品コードでupsert（ファイルに無い既存商品はそのまま）
 // 全入れ替え: upsert後、対象種別のうちファイルに無い既存商品を論理削除
+//
+// 実行場所は環境で切り替える（documents/03_設計/01_全体/06_連携エンジン・インフラ設計.md）
+// - ローカル/Docker: 同じプロセスの中でバックグラウンド実行（進捗はメモリ優先＋DB）
+// - GCP: 環境変数 IMPORT_JOB_NAME があれば、アップロードされたブックをストレージ(GCS)に置き、
+//        Cloud Run ジョブ(scripts/run-import-job.ts)を起動する。進捗はジョブがDBへ書き、APIはDBを読む
+//        (Cloud Run サービスは応答後にCPUが割り当てられないため、サービス内では処理しない)
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma.js";
 import { extractWorkbook, type ProductJson } from "./excelExtract.js";
+import { readFileBuffer, removeFile, saveFile } from "./storage.js";
 
 export type ImportMode = "diff" | "replace";
 
@@ -13,7 +20,7 @@ export type ImportJob = {
   fileName: string;
   bookType?: "PL" | "CF";
   mode: ImportMode;
-  status: "PARSING" | "RUNNING" | "DONE" | "ERROR";
+  status: "QUEUED" | "PARSING" | "RUNNING" | "DONE" | "ERROR";
   total: number;
   processed: number;
   created: number;
@@ -83,17 +90,32 @@ function rowToJob(row: {
   };
 }
 
+// 実行中のまま一定時間を過ぎたジョブは、異常終了(メモリ超過・タイムアウト等でエラー記録前に落ちた)とみなす。
+// Cloud Run ジョブのタスクタイムアウト(30分)より長くする
+const STALE_MS = 40 * 60 * 1000;
+const ACTIVE = new Set(["QUEUED", "PARSING", "RUNNING"]);
+
+async function markStale(job: ImportJob): Promise<ImportJob> {
+  if (!ACTIVE.has(job.status) || jobs.has(job.id)) return job;
+  if (Date.now() - new Date(job.startedAt).getTime() < STALE_MS) return job;
+  job.status = "ERROR";
+  job.errors.push("取込が完了しないまま時間切れになりました(処理が異常終了した可能性があります)。もう一度実行してください");
+  job.finishedAt = new Date().toISOString();
+  await persistJob(job);
+  return job;
+}
+
 export async function getJob(id: string): Promise<ImportJob | undefined> {
   const live = jobs.get(id);
   if (live) return live;
   const row = await prisma.importJob.findUnique({ where: { id } });
-  return row ? rowToJob(row) : undefined;
+  return row ? markStale(rowToJob(row)) : undefined;
 }
 
 export async function listJobs(): Promise<ImportJob[]> {
   const rows = await prisma.importJob.findMany({ orderBy: { startedAt: "desc" }, take: 30 });
   // 実行中ジョブはメモリの最新進捗で上書き
-  return rows.map((row) => jobs.get(row.id) ?? rowToJob(row));
+  return Promise.all(rows.map((row) => jobs.get(row.id) ?? markStale(rowToJob(row))));
 }
 
 // PLブックの商品コードは「XX-9999…」形式、CFブックは「XXX999」形式
@@ -257,17 +279,53 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
   jobs.delete(job.id); // 以後はDBの履歴を参照
 }
 
-export function startImportJob(
+// ストレージ上のアップロード済みブックの置き場所(Cloud Run ジョブが読む)
+function uploadKey(jobId: string): string {
+  return `imports/${jobId}`;
+}
+
+async function failJob(job: ImportJob, e: unknown): Promise<void> {
+  job.status = "ERROR";
+  job.errors.push(e instanceof Error ? e.message : String(e));
+  job.finishedAt = new Date().toISOString();
+  await persistJob(job);
+  jobs.delete(job.id);
+}
+
+// Cloud Run ジョブを起動する(ジョブIDを環境変数で渡す)。認証はメタデータサーバのトークン(サービスのSA)
+async function triggerCloudRunJob(jobName: string, jobId: string): Promise<void> {
+  const tokenRes = await fetch(
+    "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    { headers: { "Metadata-Flavor": "Google" } }
+  );
+  if (!tokenRes.ok) throw new Error(`取込ジョブの起動に失敗しました(認証トークン取得: ${tokenRes.status})`);
+  const { access_token } = (await tokenRes.json()) as { access_token: string };
+  const res = await fetch(`https://run.googleapis.com/v2/${jobName}:run`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${access_token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      overrides: { containerOverrides: [{ env: [{ name: "IMPORT_JOB_ID", value: jobId }] }] },
+    }),
+  });
+  if (!res.ok) throw new Error(`取込ジョブの起動に失敗しました(${res.status}): ${(await res.text()).slice(0, 300)}`);
+}
+
+export async function startImportJob(
   fileName: string,
   buffer: Buffer,
   mode: ImportMode,
   triggeredBy: string
-): ImportJob {
+): Promise<ImportJob> {
+  // 同時実行はしない(同じブックを並行して取り込むと商品・SKUの更新が衝突する)
+  const running = (await listJobs()).find((j) => ACTIVE.has(j.status));
+  if (running) {
+    throw Object.assign(new Error(`取込が実行中です(${running.fileName})。完了してから実行してください`), { status: 409 });
+  }
   const job: ImportJob = {
     id: randomUUID(),
     fileName,
     mode,
-    status: "PARSING",
+    status: "QUEUED",
     total: 0,
     processed: 0,
     created: 0,
@@ -277,16 +335,45 @@ export function startImportJob(
     startedAt: new Date().toISOString(),
     triggeredBy,
   };
+  await persistJob(job);
+
+  const jobName = process.env.IMPORT_JOB_NAME;
+  if (jobName) {
+    // GCP: ブックをストレージに置いて Cloud Run ジョブを起動
+    try {
+      await saveFile(uploadKey(job.id), buffer, "application/octet-stream");
+      await triggerCloudRunJob(jobName, job.id);
+    } catch (e) {
+      await removeFile(uploadKey(job.id));
+      await failJob(job, e);
+    }
+    return job;
+  }
+
+  // ローカル: 同じプロセスの中でバックグラウンド実行
+  job.status = "PARSING";
   jobs.set(job.id, job);
-  void persistJob(job);
+  runImport(job, buffer).catch((e) => failJob(job, e));
+  return job;
+}
 
-  runImport(job, buffer).catch(async (e) => {
-    job.status = "ERROR";
-    job.errors.push(e instanceof Error ? e.message : String(e));
-    job.finishedAt = new Date().toISOString();
+// Cloud Run ジョブ(scripts/run-import-job.ts)の本体: DBのジョブ行とストレージのブックから取込を実行する
+export async function runImportJobById(jobId: string): Promise<ImportJob> {
+  const row = await prisma.importJob.findUnique({ where: { id: jobId } });
+  if (!row) throw new Error(`取込ジョブが見つかりません: ${jobId}`);
+  const job = rowToJob(row);
+  if (job.status !== "QUEUED") throw new Error(`取込ジョブが待機中ではありません: ${jobId} (${job.status})`);
+  jobs.set(job.id, job);
+  try {
+    job.status = "PARSING";
     await persistJob(job);
-    jobs.delete(job.id);
-  });
-
+    const buffer = await readFileBuffer(uploadKey(job.id));
+    if (!buffer) throw new Error("アップロードされたファイルが見つかりません");
+    await runImport(job, buffer);
+  } catch (e) {
+    await failJob(job, e);
+  } finally {
+    await removeFile(uploadKey(job.id));
+  }
   return job;
 }
