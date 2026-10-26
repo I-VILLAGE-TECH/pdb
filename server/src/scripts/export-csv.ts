@@ -1,10 +1,11 @@
 // エクスポート画面と同じ生成処理でCSVを1ファイル(分割なし)に書き出すCLI。並行出力比較(tools/csv-compare)用
 // 実行: npx tsx src/scripts/export-csv.ts --type <fileType> --book PL|CF --out <出力パス> [--channel futureshop]
-//   --type: products(既定) / option_basic / category 等(routes/exports.ts の fileType)
+//   --type: products(既定) / option_basic / category 等(routes/exports.ts の fileType)。futureshop以外は lib/mallCsv.ts の種別
 //   --book: 対象ブック。PL=「XX-9999」形式の商品コード、CF=それ以外(シーリングファン一覧)
 import { writeFileSync } from "node:fs";
 import { prisma } from "../lib/prisma.js";
 import { generateRows, buildCsvText, encodeCsv, type Filter } from "../routes/exports.js";
+import { buildMallFile } from "../lib/mallCsv.js";
 
 function arg(name: string, def?: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -27,7 +28,10 @@ const productCodes = live
   .filter((c) => /^[A-Z]+-\d/.test(c) === (book === "PL"));
 
 const started = Date.now();
-const { header, rows } = await generateRows({ channelId: channel.id, productCodes, fileType });
-writeFileSync(out, encodeCsv(channel.charset === "SHIFT_JIS", buildCsvText(header, rows)));
+const result = await generateRows({ channelId: channel.id, productCodes, fileType });
+const { header, rows } = result;
+// futureshop以外の連携先は種別定義の形式(区切り・クォート・文字コード)で書く。分割はしない
+if ("mallSpec" in result && result.mallSpec) writeFileSync(out, buildMallFile(result.mallSpec, rows));
+else writeFileSync(out, encodeCsv(channel.charset === "SHIFT_JIS", buildCsvText(header, rows)));
 console.log(`${fileType} ${book}: ${rows.length} rows -> ${out} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
 await prisma.$disconnect();

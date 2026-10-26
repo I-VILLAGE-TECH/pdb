@@ -91,6 +91,17 @@ export function CsvExport() {
 
   const selectedChannel = channels.find((c) => String(c.id) === target);
 
+  // futureshop以外の連携先のファイル種別(サーバの lib/mallCsv.ts の定義。現行マクロのボタン相当)
+  type MallFileType = { key: string; label: string; book: string; isSet: boolean };
+  const [mallTypes, setMallTypes] = useState<MallFileType[]>([]);
+  useEffect(() => {
+    setMallTypes([]);
+    if (target === MASTER || !selectedChannel || selectedChannel.code === "futureshop") return;
+    api<{ fileTypes: MallFileType[] }>(`/api/exports/file-types?channelId=${target}`)
+      .then((r) => setMallTypes(r.fileTypes))
+      .catch((e) => setError(e.message));
+  }, [target, selectedChannel]);
+
   function filterBody(): Record<string, unknown> {
     const body: Record<string, unknown> = {
       categories:
@@ -188,10 +199,18 @@ export function CsvExport() {
     { key: "variation_set_update", label: "バリエーション Update(CF・3ファイル)" },
     { key: "image_alt", label: "商品画像ALT(CF)" },
   ];
-  const FS_FILE_TYPES = categoryTab === "CEILING_FAN" ? FS_FILE_TYPES_CF : FS_FILE_TYPES_PL;
   const isFutureshop = selectedChannel?.code === "futureshop";
+  // タブのブック(PL/CF)向けの他連携先の種別。種別が定義された連携先だけ選択肢を出す
+  const tabBook = categoryTab === "CEILING_FAN" ? "CF" : "PL";
+  const MALL_TYPES_FOR_TAB = mallTypes.filter((t) => t.book === tabBook || t.book === "ANY");
+  const FS_FILE_TYPES = isFutureshop
+    ? categoryTab === "CEILING_FAN" ? FS_FILE_TYPES_CF : FS_FILE_TYPES_PL
+    : [{ key: "products", label: "列定義どおり(SKU単位)" }, ...MALL_TYPES_FOR_TAB.map((t) => ({ key: t.key, label: t.label }))];
+  const showFileTypes = isFutureshop || MALL_TYPES_FOR_TAB.length > 0;
   // ZIPでまとめるセット出力はプレビュー対象外(単一CSVのサブ種別はプレビュー可)
-  const isSetType = ["option_set", "variation_set_new", "variation_set_update"].includes(fileType);
+  const isSetType =
+    ["option_set", "variation_set_new", "variation_set_update"].includes(fileType) ||
+    mallTypes.some((t) => t.key === fileType && t.isSet);
 
   return (
     <div>
@@ -208,7 +227,10 @@ export function CsvExport() {
               setCategoryTab(t.key);
               setPreview(null);
               // タブ側に無い種別(CF専用のタグ等)が選ばれていたら商品CSVに戻す
-              const types = t.key === "CEILING_FAN" ? FS_FILE_TYPES_CF : FS_FILE_TYPES_PL;
+              const book = t.key === "CEILING_FAN" ? "CF" : "PL";
+              const types = isFutureshop
+                ? t.key === "CEILING_FAN" ? FS_FILE_TYPES_CF : FS_FILE_TYPES_PL
+                : mallTypes.filter((x) => x.book === book || x.book === "ANY");
               if (!types.some((x) => x.key === fileType)) setFileType("products");
             }}
           >
@@ -247,6 +269,7 @@ export function CsvExport() {
                 checked={target === String(c.id)}
                 onChange={() => {
                   setTarget(String(c.id));
+                  setFileType("products"); // 種別は連携先ごとに異なる
                   setPreview(null);
                 }}
               />
@@ -270,7 +293,7 @@ export function CsvExport() {
       <div className="panel">
         <h3 style={{ marginTop: 0 }}>絞り込み</h3>
         <div className="toolbar" style={{ marginBottom: 0 }}>
-          {isFutureshop && (
+          {showFileTypes && (
             <select
               value={fileType}
               onChange={(e) => {
