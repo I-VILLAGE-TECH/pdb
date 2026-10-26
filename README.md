@@ -50,6 +50,7 @@ product-db/
 - 初期管理者は seed で作成: `admin@example.com` / `admin1234`
   （`ADMIN_EMAIL` / `ADMIN_INITIAL_PASSWORD` 環境変数で上書き可。**初回ログイン後に必ず変更**）
 - ユーザーは削除せず**無効化**（履歴保全。無効化時に既存セッションも破棄）。自分自身の権限変更・無効化は不可
+- 自分のパスワードはサイドメニュー下の「パスワード変更」（`/account`、`PUT /api/auth/password`）で変更。変更時はほかのセッションを破棄する
 
 ## 操作マニュアル
 
@@ -144,6 +145,9 @@ npm run dev               # /api・/uploads は :8080 へプロキシ（vite.con
 - **全入れ替え**: 取込後、同一種別でファイルに無い既存商品を**論理削除**（deleted_at。物理削除しない）。
   再度ファイルに現れた商品は論理削除が自動解除される
 - バックグラウンドジョブ＋進捗表示。解析は `server/src/lib/excelExtract.ts`（tools/import/extract.py と同一マッピングのTS移植）
+- **取込後のマスタ確認**: 取り込んだ商品にあって汎用マスタ（master_items）に無い値と、取込で新しく作ったメーカーを
+  `import_jobs.master_review` に記録し、画面で選んで汎用マスタに追加する（`POST /api/imports/:id/masters`）。
+  取込自体は汎用マスタを変えない。メーカーは商品の紐付けに必要なため取込時に作る（既存メーカーは上書きしない）
 - ジョブの状態は DB（`import_jobs`）に記録する。ローカルは同じプロセスの中で実行し、GCP では Cloud Run ジョブ `product-db-import` で実行する（環境変数 `IMPORT_JOB_NAME` で切替。[DEPLOY.md](DEPLOY.md)）
 - 取込中は次の取込を受け付けない（409）
 
@@ -197,6 +201,11 @@ Excel 取込は Cloud Run ジョブで実行し、CSV 出力はリクエスト�
 | GET/POST/PUT/DELETE | `/api/products/:id` | 詳細・登録（代表SKU自動作成）・更新・論理削除 |
 | POST/PUT/DELETE | `/api/products/:id/variations/…` | SKU追加・更新・削除 |
 | PATCH | `/api/products/:id/variations/:vid/stock` | 在庫のみ更新（UC③） |
+| GET | `/api/images/summary` / `/api/images/missing` | 元画像の登録状況・未アップロード一覧（`?format=csv`） |
+| POST | `/api/images/check` / `/api/images/upload` | 元画像の照合（名前・サイズ）とアップロード（ADMIN。1回20ファイルまで）。ファイル名単位で `image_files` に保存先を記録し、幅・高さを計測 |
+| GET | `/api/images/file/:name` | 元画像の表示 |
+| POST | `/api/images/output/preview` / `/api/images/output/download` | 画像ファイルの出力（FS_CopyIMG・ListIMG_syukusen・Yahoo画像リネーム相当）。ZIP は少しずつ書き出す（`lib/zipStream.ts`） |
+| POST | `/api/html-exports/download` | HTML出力（PL SPEC / CF 製品画像・SPEC）を ZIP で。商品を200件ずつ生成して書き出す |
 | POST/DELETE | `/api/products/:id/images(/:imageId)` | 商品画像のアップロード・削除。保存先はローカル`uploads/`（Docker volume）またはGCS（`GCS_BUCKET`設定時）、配信は認証つき `GET /uploads/<key>` |
 | GET/POST/PUT | `/api/makers`, `/api/channels`, `/api/categories` | 各マスタ |
 | POST | `/api/sync/recalculate` | 差分再計算（local層のハッシュ更新＋diff_status確定） |

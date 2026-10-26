@@ -32,6 +32,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "連携",
     items: [
       { to: "/exports", label: "CSV出力" },
+      { to: "/images", label: "画像（アップロード・出力）" },
       // 連携状況(/sync)・連携先設定(/channels)は Phase2(API連携・差分管理)で使うためメニューには出さない。画面とルートは残す
     ],
   },
@@ -150,6 +151,9 @@ export function Layout() {
           <div className="sidebar-user">
             <div>{user.name}</div>
             <div className="muted-dark">{ROLE_LABEL[user.role]}</div>
+            <NavLink to="/account" className="sidebar-account-link">
+              パスワード変更
+            </NavLink>
           </div>
           <button className="logout-btn" onClick={handleLogout}>
             ログアウト

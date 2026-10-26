@@ -134,6 +134,8 @@ resource "google_cloud_run_v2_service" "app" {
 
   template {
     service_account = google_service_account.run.email
+    # 画像・HTML の ZIP ダウンロード(全商品分)は数分かかるため、既定の300秒から延ばす
+    timeout = "900s"
 
     scaling {
       min_instance_count = 0

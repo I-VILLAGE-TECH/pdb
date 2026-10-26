@@ -160,6 +160,35 @@ export function CsvExport() {
     }
   }
 
+  // HTML出力(現行マクロの SPEC / Original＆Spec)。タブのブックで種別が決まる。絞り込みは上と同じ
+  const htmlType = categoryTab === "CEILING_FAN" ? "cf_original_spec" : "pl_spec";
+  const [htmlStartedAt, setHtmlStartedAt] = useState<number | null>(null);
+  const [htmlResult, setHtmlResult] = useState("");
+  async function downloadHtml() {
+    setError("");
+    setHtmlResult("");
+    setHtmlStartedAt(Date.now());
+    try {
+      const { fileType: _ignored, ...body } = filterBody();
+      const res = await fetch("/api/html-exports/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ ...body, type: htmlType }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string; errors?: string[] };
+        throw new Error([err.error ?? `HTTP ${res.status}`, ...(err.errors ?? []).slice(0, 10)].join("\n"));
+      }
+      await saveBlobResponse(res);
+      setHtmlResult("ZIP を保存しました。データ不備で出力しなかった商品があれば、ZIP 内の errors.txt に一覧があります");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHtmlStartedAt(null);
+    }
+  }
+
   function set(key: keyof typeof filters, value: string) {
     setFilters((f) => ({ ...f, [key]: value }));
     setPreview(null);
@@ -382,6 +411,30 @@ export function CsvExport() {
             )}
           </span>
         )}
+      </div>
+
+      <div className="panel">
+        <h3 style={{ marginTop: 0 }}>HTML出力（スペックページ等）</h3>
+        <p className="muted" style={{ marginTop: 0 }}>
+          {categoryTab === "CEILING_FAN"
+            ? "現行Excelの「Original＆Spec」ボタン相当。商品登録フラグが ○△■● の商品の製品画像ページ(original/)とスペックページ(spec/)をZIPで出力します。"
+            : "現行Excelの「FS_Spec」ボタン相当。商品登録フラグが ○ の商品のスペックページをZIPで出力します（spec/ = ペンダントライト一覧、spec_other/ = その他別管理一覧FS）。"}
+          対象は上の絞り込み（タブ・検索・状態・メーカー・マーク付き）に従います。文字コードは UTF-8(BOM付き)です。
+        </p>
+        <button className="primary" onClick={downloadHtml} disabled={htmlStartedAt != null}>
+          {htmlStartedAt != null ? (
+            <>
+              <Spinner />
+              作成中…
+            </>
+          ) : (
+            "HTMLをZIPでダウンロード"
+          )}
+        </button>
+        {htmlStartedAt != null && (
+          <LoadingStatus message="HTMLを作成しています" startedAt={htmlStartedAt} note="全件で数秒〜数十秒かかります" />
+        )}
+        {htmlResult && <div style={{ color: "#166534", paddingTop: 8 }}>{htmlResult}</div>}
       </div>
 
       {exportJob && (

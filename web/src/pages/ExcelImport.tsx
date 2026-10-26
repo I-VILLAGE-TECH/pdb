@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { LoadingStatus, ProgressBar, Spinner } from "../components/Loading";
+import { MASTER_TYPE_LABEL } from "./Masters";
+
+// 取込後のマスタ確認(server/src/lib/importJobs.ts MasterReview)。values は未登録のまま残っている値だけ
+type MasterReview = {
+  values: Array<{ type: string; value: string; count: number; samples: string[] }>;
+  newMakers: Array<{ id: number; makerCode: string; nameJp: string }>;
+  reviewedAt?: string;
+  reviewedBy?: string;
+};
 
 type ImportJob = {
   id: string;
@@ -17,7 +27,168 @@ type ImportJob = {
   startedAt: string;
   finishedAt?: string;
   triggeredBy: string;
+  masterReview?: MasterReview;
 };
+
+// 確認が必要か(未登録の値か新しいメーカーがあり、まだ「確認済み」にしていない)
+function needsMasterReview(j: ImportJob): boolean {
+  const r = j.masterReview;
+  return !!r && !r.reviewedAt && (r.values.length > 0 || r.newMakers.length > 0);
+}
+
+// 取込後のマスタ確認: 取り込んだ商品にあってマスタに無い値を、選んで汎用マスタに追加する。
+// 取込そのものはマスタを変えない(新しいメーカーだけは商品の紐付けに必要なため取込時に作る)
+function MasterReviewPanel({ job, onUpdated }: { job: ImportJob; onUpdated: (j: ImportJob) => void }) {
+  const review = job.masterReview!;
+  const key = (v: { type: string; value: string }) => `${v.type}\t${v.value}`;
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  function toggle(k: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
+  }
+
+  async function addSelected() {
+    const items = review.values
+      .filter((v) => selected.has(key(v)))
+      .map((v) => ({ type: v.type, value: v.value }));
+    if (items.length === 0) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const res = await api<{ added: number; job: ImportJob }>(`/api/imports/${job.id}/masters`, {
+        method: "POST",
+        body: JSON.stringify({ items }),
+      });
+      setSelected(new Set());
+      setMessage(`${res.added} 件をマスタに追加しました`);
+      onUpdated(res.job);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markReviewed() {
+    const rest = review.values.length;
+    if (rest > 0 && !confirm(`残りの ${rest} 件はマスタに追加せずに確認済みにします。よろしいですか？`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      onUpdated(await api<ImportJob>(`/api/imports/${job.id}/masters/reviewed`, { method: "POST" }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (review.values.length === 0 && review.newMakers.length === 0) {
+    return <div className="muted" style={{ marginTop: 8 }}>マスタ確認: マスタに無い値はありませんでした</div>;
+  }
+
+  const allSelected = review.values.length > 0 && review.values.every((v) => selected.has(key(v)));
+  return (
+    <div style={{ marginTop: 12 }}>
+      <h4 style={{ margin: "0 0 4px" }}>
+        マスタ確認
+        {review.reviewedAt ? (
+          <span className="badge green" style={{ marginLeft: 8 }}>
+            確認済み（{new Date(review.reviewedAt).toLocaleString("ja-JP")} {review.reviewedBy}）
+          </span>
+        ) : (
+          <span className="badge amber" style={{ marginLeft: 8 }}>未確認</span>
+        )}
+      </h4>
+      {error && <div className="error">{error}</div>}
+      {message && <div style={{ color: "#166534", padding: "4px 0" }}>{message}</div>}
+
+      {review.newMakers.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div>
+            この取込で新しく作ったメーカー（{review.newMakers.length} 件）。名称や CF 用の表記を{" "}
+            <Link to="/masters">マスタ管理</Link> のメーカーで確認してください。
+          </div>
+          <ul className="muted" style={{ margin: "4px 0" }}>
+            {review.newMakers.map((m) => (
+              <li key={m.id}>
+                {m.makerCode} {m.nameJp}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {review.values.length > 0 && (
+        <>
+          <div className="muted" style={{ marginBottom: 6 }}>
+            取り込んだ商品にあって、マスタ（商品登録・編集の選択肢）に無い値です。追加するものを選んでください。
+            追加しなくても取り込んだ商品の値はそのまま使えます。
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: 32 }}>
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={() => setSelected(allSelected ? new Set() : new Set(review.values.map(key)))}
+                    aria-label="すべて選択"
+                  />
+                </th>
+                <th>マスタ</th>
+                <th>値</th>
+                <th>商品数</th>
+                <th>例</th>
+              </tr>
+            </thead>
+            <tbody>
+              {review.values.map((v) => (
+                <tr key={key(v)} onClick={() => toggle(key(v))} style={{ cursor: "pointer" }}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(key(v))}
+                      onChange={() => toggle(key(v))}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </td>
+                  <td>{MASTER_TYPE_LABEL[v.type] ?? v.type}</td>
+                  <td>{v.value}</td>
+                  <td>{v.count.toLocaleString()}</td>
+                  <td className="muted">{v.samples.join(", ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      )}
+
+      <div className="toolbar" style={{ marginTop: 8, marginBottom: 0 }}>
+        {review.values.length > 0 && (
+          <button type="button" className="primary" disabled={busy || selected.size === 0} onClick={addSelected}>
+            {busy ? <Spinner /> : null}
+            選択した {selected.size} 件をマスタに追加
+          </button>
+        )}
+        {!review.reviewedAt && (
+          <button type="button" disabled={busy} onClick={markReviewed}>
+            確認済みにする
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
 
 const STATUS_LABEL: Record<string, string> = {
   QUEUED: "起動待ち", // GCPでは取込用のCloud Runジョブの起動に数十秒かかる
@@ -29,15 +200,6 @@ const STATUS_LABEL: Record<string, string> = {
 
 const MODE_LABEL: Record<string, string> = { diff: "差分更新", replace: "全入れ替え" };
 
-type BulkImageResult = {
-  fileName: string;
-  matchedImages: number;
-  matchedProducts: number;
-  error?: string;
-};
-
-type ImagesSummary = { total: number; linked: number; unlinked: number };
-
 export function ExcelImport() {
   const [file, setFile] = useState<File | null>(null);
   const [mode, setMode] = useState<"diff" | "replace">("diff");
@@ -48,55 +210,9 @@ export function ExcelImport() {
   const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // 画像一括アップロード
-  const [imageFiles, setImageFiles] = useState<File[]>([]);
-  const [imageBusy, setImageBusy] = useState(false);
-  const [imageProgress, setImageProgress] = useState({ done: 0, total: 0 });
-  const [imageResults, setImageResults] = useState<BulkImageResult[] | null>(null);
-  const [imagesSummary, setImagesSummary] = useState<ImagesSummary | null>(null);
-
   const loadHistory = useCallback(() => {
     api<ImportJob[]>("/api/imports").then(setHistory).catch(() => {});
-    api<ImagesSummary>("/api/imports/images/summary").then(setImagesSummary).catch(() => {});
   }, []);
-
-  async function uploadImages(e: React.FormEvent) {
-    e.preventDefault();
-    if (imageFiles.length === 0) return;
-    setImageBusy(true);
-    setError("");
-    setImageResults(null);
-    setImageProgress({ done: 0, total: imageFiles.length });
-    const all: BulkImageResult[] = [];
-    try {
-      // 20ファイルずつ分割アップロード
-      for (let i = 0; i < imageFiles.length; i += 20) {
-        const chunk = imageFiles.slice(i, i + 20);
-        const form = new FormData();
-        for (const f of chunk) form.append("files", f);
-        const res = await fetch("/api/imports/images", {
-          method: "POST",
-          credentials: "same-origin",
-          body: form,
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);
-        }
-        const data = (await res.json()) as { results: BulkImageResult[] };
-        all.push(...data.results);
-        setImageProgress({ done: Math.min(i + 20, imageFiles.length), total: imageFiles.length });
-      }
-      setImageResults(all);
-      setImageFiles([]);
-      loadHistory();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setImageResults(all.length > 0 ? all : null);
-    } finally {
-      setImageBusy(false);
-    }
-  }
 
   useEffect(() => {
     loadHistory();
@@ -158,6 +274,12 @@ export function ExcelImport() {
       setUploading(false);
       setUploadStartedAt(null);
     }
+  }
+
+  // 取込履歴からマスタ確認を開く(結果パネルは画面上部にある)
+  function openJob(j: ImportJob) {
+    setCurrentJob(j);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   const progress =
@@ -278,6 +400,16 @@ export function ExcelImport() {
               {currentJob.errors.length > 0 && <> / 失敗 {currentJob.errors.length} 件</>}
             </div>
           )}
+          {currentJob.status === "DONE" && currentJob.masterReview && (
+            <MasterReviewPanel
+              key={currentJob.id}
+              job={currentJob}
+              onUpdated={(j) => {
+                setCurrentJob(j);
+                loadHistory();
+              }}
+            />
+          )}
           {currentJob.errors.length > 0 && (
             <details style={{ marginTop: 8 }}>
               <summary className="error">エラー {currentJob.errors.length} 件</summary>
@@ -291,84 +423,9 @@ export function ExcelImport() {
         </div>
       )}
 
-      <h3>画像一括アップロード（ファイル名で紐付け）</h3>
       <p className="muted">
-        Excel取込で登録された画像ファイル名（例: ivillage_if0160L-wh_M1.jpg）と同じ名前の画像を
-        まとめてアップロードすると、一致する商品画像に自動で紐付きます（大文字小文字は無視）。
-        同名画像を複数商品で共有している場合はすべてに紐付きます。
+        商品画像の元ファイルは <Link to="/images">画像</Link> 画面でフォルダごとアップロードします（Excel取込をやり直しても消えません）。
       </p>
-      {imagesSummary && (
-        <p className="muted">
-          画像レコード {imagesSummary.total.toLocaleString()} 件中、紐付け済み{" "}
-          {imagesSummary.linked.toLocaleString()} 件 ／ <b>未紐付け {imagesSummary.unlinked.toLocaleString()} 件</b>
-        </p>
-      )}
-      <form onSubmit={uploadImages} className="panel">
-        <div className="field">
-          <label>画像ファイル（複数選択可・jpg/png/gif/webp/avif・1ファイル20MBまで）</label>
-          <input
-            type="file"
-            accept="image/*"
-            multiple
-            onChange={(e) => setImageFiles([...(e.target.files ?? [])])}
-          />
-        </div>
-        {imageBusy && (
-          <>
-            <ProgressBar
-              percent={imageProgress.total ? Math.round((imageProgress.done / imageProgress.total) * 100) : null}
-              style={{ marginBottom: 6 }}
-            />
-            <LoadingStatus message={`画像をアップロードしています ${imageProgress.done} / ${imageProgress.total} ファイル`} />
-          </>
-        )}
-        <button type="submit" className="primary" disabled={imageFiles.length === 0 || imageBusy}>
-          {imageBusy ? "アップロード中…" : `アップロードして紐付け（${imageFiles.length} ファイル）`}
-        </button>
-      </form>
-
-      {imageResults && (
-        <div className="panel">
-          {(() => {
-            const linked = imageResults.filter((r) => r.matchedImages > 0);
-            const unmatched = imageResults.filter((r) => r.matchedImages === 0 && !r.error);
-            const failed = imageResults.filter((r) => r.error);
-            const totalRows = linked.reduce((a, r) => a + r.matchedImages, 0);
-            return (
-              <>
-                <div>
-                  紐付け完了: <b>{linked.length}</b> ファイル → 画像 {totalRows} 件（
-                  {linked.reduce((a, r) => a + r.matchedProducts, 0)} 商品）
-                  {unmatched.length > 0 && <> ／ 一致なし {unmatched.length} 件</>}
-                  {failed.length > 0 && <> ／ 失敗 {failed.length} 件</>}
-                </div>
-                {unmatched.length > 0 && (
-                  <details style={{ marginTop: 8 }}>
-                    <summary className="muted">一致しなかったファイル（{unmatched.length}）</summary>
-                    <ul className="muted" style={{ maxHeight: 200, overflowY: "auto" }}>
-                      {unmatched.slice(0, 200).map((r) => (
-                        <li key={r.fileName}>{r.fileName}</li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-                {failed.length > 0 && (
-                  <details style={{ marginTop: 8 }}>
-                    <summary className="error">失敗（{failed.length}）</summary>
-                    <ul className="muted">
-                      {failed.slice(0, 50).map((r) => (
-                        <li key={r.fileName}>
-                          {r.fileName}: {r.error}
-                        </li>
-                      ))}
-                    </ul>
-                  </details>
-                )}
-              </>
-            );
-          })()}
-        </div>
-      )}
 
       <h3>取込履歴</h3>
       <table>
@@ -379,6 +436,7 @@ export function ExcelImport() {
             <th>ブック</th>
             <th>モード</th>
             <th>結果</th>
+            <th>マスタ確認</th>
             <th>実行者</th>
           </tr>
         </thead>
@@ -401,12 +459,35 @@ export function ExcelImport() {
                   </span>
                 )}
               </td>
+              <td>
+                {needsMasterReview(j) ? (
+                  <button
+                    type="button"
+                    className="badge amber"
+                    onClick={() => openJob(j)}
+                    style={{ cursor: "pointer", border: 0 }}
+                  >
+                    未確認 {j.masterReview!.values.length + j.masterReview!.newMakers.length} 件
+                  </button>
+                ) : j.masterReview?.reviewedAt ? (
+                  <button
+                    type="button"
+                    className="badge green"
+                    onClick={() => openJob(j)}
+                    style={{ cursor: "pointer", border: 0 }}
+                  >
+                    確認済み
+                  </button>
+                ) : (
+                  <span className="muted">-</span>
+                )}
+              </td>
               <td>{j.triggeredBy}</td>
             </tr>
           ))}
           {history.length === 0 && (
             <tr>
-              <td colSpan={6} className="muted">
+              <td colSpan={7} className="muted">
                 まだ取込履歴はありません
               </td>
             </tr>

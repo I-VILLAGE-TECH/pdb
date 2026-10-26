@@ -48,7 +48,7 @@ export const exportsRouter = Router();
 
 const exportCategoryEnum = z.enum(["PENDANT_LIGHT", "CEILING_LIGHT", "CEILING_FAN", "OTHER"]);
 
-const filterQuery = z.object({
+export const filterQuery = z.object({
   channelId: z.coerce.number().int(),
   q: z.string().optional(),
   category: exportCategoryEnum.optional(),
@@ -77,7 +77,7 @@ const filterQuery = z.object({
 
 export type Filter = z.infer<typeof filterQuery>;
 
-function buildWhere(f: Filter): Prisma.ProductWhereInput {
+export function buildWhere(f: Filter): Prisma.ProductWhereInput {
   return {
     deletedAt: null,
     ...(f.productCodes && { productCode: { in: f.productCodes } }),

@@ -108,6 +108,8 @@ model ImportJob {
   triggeredBy String    @map("triggered_by")
   startedAt   DateTime  @map("started_at")
   finishedAt  DateTime? @map("finished_at")
+  // 取込後のマスタ確認: 汎用マスタに無い値・新しく作ったメーカー・確認済みの記録(lib/importJobs.ts MasterReview)
+  masterReview Json?    @map("master_review")
 
   @@index([startedAt])
   @@map("import_jobs")
@@ -462,6 +464,11 @@ model ImageFile {
   width     Int
   height    Int
   updatedAt DateTime @updatedAt @map("updated_at")
+  // 元画像(画像管理画面でアップロード)。Excel取込で product_images を作り直しても消えないよう、ファイル名単位で持つ
+  storageKey String?   @map("storage_key")
+  byteSize   Int?      @map("byte_size")
+  sourcePath String?   @map("source_path") // アップロード時のフォルダ内の相対パス(例: odelic/xxx.jpg)
+  uploadedAt DateTime? @map("uploaded_at")
 
   @@map("image_files")
 }

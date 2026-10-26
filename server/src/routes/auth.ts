@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma.js";
-import { createSession, destroySession, requireAuth } from "../lib/auth.js";
+import { createSession, currentSessionId, destroySession, requireAuth } from "../lib/auth.js";
 
 export const authRouter = Router();
 
@@ -51,10 +51,15 @@ authRouter.put("/password", requireAuth, async (req, res, next) => {
     if (!(await bcrypt.compare(currentPassword, user.passwordHash))) {
       return res.status(400).json({ error: "現在のパスワードが違います" });
     }
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ error: "新しいパスワードが現在のパスワードと同じです" });
+    }
     await prisma.user.update({
       where: { id: user.id },
       data: { passwordHash: await bcrypt.hash(newPassword, 10) },
     });
+    // ほかの端末・ブラウザのログインは無効にする(この画面のログインは続ける)
+    await prisma.session.deleteMany({ where: { userId: user.id, id: { not: currentSessionId(req) ?? "" } } });
     res.status(204).end();
   } catch (e) {
     next(e);

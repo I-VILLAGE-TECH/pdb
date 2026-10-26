@@ -16,6 +16,8 @@ import { CsvExport } from "./pages/CsvExport";
 import { Users } from "./pages/Users";
 import { ExcelImport } from "./pages/ExcelImport";
 import { Manual } from "./pages/Manual";
+import { Account } from "./pages/Account";
+import { Images } from "./pages/Images";
 import "./index.css";
 
 const router = createBrowserRouter([
@@ -39,6 +41,8 @@ const router = createBrowserRouter([
       { path: "users", element: <Users /> },
       { path: "imports", element: <ExcelImport /> },
       { path: "manual", element: <Manual /> },
+      { path: "account", element: <Account /> },
+      { path: "images", element: <Images /> },
     ],
   },
 ]);
