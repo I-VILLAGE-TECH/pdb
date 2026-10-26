@@ -956,7 +956,7 @@ export function cfExternalCatchCopy(p: ProductFull): string {
 
 // ================= SetFunctionIcon: 機能アイコン(独自コメント13の商品特徴) =================
 const ICON = "https://www.fazoo.biz/cf_img/products_detail/";
-function cfFunctionIcons(p: ProductFull): string {
+export function cfFunctionIcons(p: ProductFull): string {
   const f = p.fanAttrs;
   const img = (file: string, alt: string) => `<img src="${ICON}${file}" alt="${alt}">\r\n`;
   let s = "";
