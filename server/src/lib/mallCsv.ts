@@ -1,4 +1,4 @@
-// futureshop 以外の連携先(Yahoo / 楽天 / Amazon 等)のファイル出力定義
+// futureshop 以外の連携先(Yahoo / Amazon 等)のファイル出力定義。楽天は現行のスプレッドシート(GAS)の移植で、lib/rakuten/ にある
 // 現行マクロはボタン1つで複数のファイル(Yahoo: 商品・在庫・削除、Amazon: IV・SD 等)を作り、
 // ファイルごとに区切り文字・クォート・文字コード・拡張子・ファイル名・分割件数が違う。
 // それを「ファイル種別の定義(MallFileSpec)」と「ボタン相当のセット(MallSetSpec)」で表す。
@@ -6,7 +6,6 @@
 import iconv from "iconv-lite";
 import type { Prisma } from "@prisma/client";
 import { YAHOO_FILE_SPECS, YAHOO_SET_SPECS } from "./mall/yahoo.js";
-import { RAKUTEN_FILE_SPECS, RAKUTEN_SET_SPECS } from "./mall/rakuten.js";
 import { AMAZON_FILE_SPECS, AMAZON_SET_SPECS } from "./mall/amazon.js";
 
 export type ProductFull = Prisma.ProductGetPayload<{
@@ -65,8 +64,8 @@ export type MallSetSpec = {
   zipName: (stamp: string) => string;
 };
 
-export const MALL_FILE_SPECS: MallFileSpec[] = [...YAHOO_FILE_SPECS, ...RAKUTEN_FILE_SPECS, ...AMAZON_FILE_SPECS];
-export const MALL_SET_SPECS: MallSetSpec[] = [...YAHOO_SET_SPECS, ...RAKUTEN_SET_SPECS, ...AMAZON_SET_SPECS];
+export const MALL_FILE_SPECS: MallFileSpec[] = [...YAHOO_FILE_SPECS, ...AMAZON_FILE_SPECS];
+export const MALL_SET_SPECS: MallSetSpec[] = [...YAHOO_SET_SPECS, ...AMAZON_SET_SPECS];
 
 export function findMallFileSpec(channel: string, fileType: string): MallFileSpec | undefined {
   return MALL_FILE_SPECS.find((s) => s.channel === channel && s.fileType === fileType);

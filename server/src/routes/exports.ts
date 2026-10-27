@@ -43,6 +43,13 @@ import {
   plComment02, plComment03, plComment04, plComment05, plComment06,
   plComment07, plComment08, plComment09, plRelKey, setPlRelated, type PlRelated, plPageSuffix, altBase,
 } from "../lib/fsPlComments.js";
+import {
+  buildRakutenReport,
+  rakutenCsvFileName,
+  findRakutenFileType,
+  generateRakutenCsv,
+  RAKUTEN_FILE_TYPES,
+} from "../lib/rakuten/rakutenExport.js";
 
 export const exportsRouter = Router();
 
@@ -496,12 +503,32 @@ function csvField(s: string): string {
 
 type ExportProgress = (phase: string, processed: number, total: number) => void;
 
+// 楽天は対象ブックを種別(PL/CF)で決める(商品コードの形式で判定)。画面のタブのカテゴリ条件は使わない
+function rakutenWhere(f: Filter): Prisma.ProductWhereInput {
+  const { category: _c, categories: _cs, ...rest } = f;
+  return buildWhere(rest);
+}
+
 export async function generateRows(f: Filter, onProgress?: ExportProgress) {
   onProgress?.("商品データ読み込み中", 0, 0);
   const channel = await prisma.channel.findUniqueOrThrow({
     where: { id: f.channelId },
     include: { fieldMaps: { orderBy: { outputColNo: "asc" } } },
   });
+  // 楽天: 現行の楽天スプレッドシート(GAS)の移植(lib/rakuten/)。台帳の行から作る。プレビューでは SKU を保存しない
+  if (channel.code === "rakuten" && f.fileType && f.fileType !== "products") {
+    const spec = findRakutenFileType(f.fileType);
+    if (!spec) {
+      throw Object.assign(new Error(`この連携先では出力できないファイル種別です: ${f.fileType}`), { status: 400 });
+    }
+    const rakuten = await generateRakutenCsv(spec.key, rakutenWhere(f), {
+      persist: false,
+      keepRows: 5, // プレビューは先頭5行。件数は rakuten.total
+      onProgress: (n) => onProgress?.("生成中", n, 0),
+    });
+    const rows = rakuten.rows.map((r) => Array.from(r, (v) => (v == null ? "" : String(v))));
+    return { channel, header: rakuten.header, rows, fileType: f.fileType, rakuten };
+  }
   // futureshop以外の連携先のファイル種別(lib/mallCsv.ts)。対象ブックの商品をシート順で渡す
   if (f.fileType && f.fileType !== "products" && channel.code !== "futureshop") {
     const spec = findMallFileSpec(channel.code, f.fileType);
@@ -743,7 +770,7 @@ async function handlePreview(req: Request, res: Response, next: NextFunction) {
       channel: { code: channel.code, name: channel.name, charset: channel.charset },
       header,
       rows: rows.slice(0, 5),
-      total: rows.length,
+      total: "rakuten" in result && result.rakuten ? result.rakuten.total : rows.length,
       // 分割目安: サブCSVは種別ごとの件数(PL/CFで異なる。subMeta)、他連携先は種別定義、商品CSVはchannels.split_rows
       splitRows: subMetaOf(result)?.splitRows ?? mallSpecOf(result)?.splitRows ?? channel.splitRows,
     });
@@ -758,6 +785,10 @@ exportsRouter.post("/preview", handlePreview);
 async function handleCsv(req: Request, res: Response, next: NextFunction) {
   try {
     const f = parseFilter(req);
+    if (findRakutenFileType(f.fileType)) {
+      // 楽天は新規 SKU の保存・エラー一覧の同梱があるため POST /download で出す
+      return res.status(400).json({ error: "楽天の CSV は POST /api/exports/download で出力してください" });
+    }
     const result = await generateRows(f);
     const { channel, header, rows } = result;
     const mallSpec = mallSpecOf(result);
@@ -889,6 +920,35 @@ async function runExportJob(job: ExportJob, f: Filter) {
       .slice(0, 12);
     // 他連携先のセット(ボタン1回分の複数ファイル)・単体ファイル
     const channelCode = (await prisma.channel.findUniqueOrThrow({ where: { id: f.channelId } })).code;
+    // 楽天: CSV(normal-item)。出力できなかった行・警告があれば一覧と一緒に ZIP にする。新規 SKU はここで保存する
+    const rakutenSpec = channelCode === "rakuten" ? findRakutenFileType(f.fileType) : undefined;
+    if (rakutenSpec) {
+      const result = await generateRakutenCsv(rakutenSpec.key, rakutenWhere(f), {
+        persist: true,
+        encoding: "Shift_JIS",
+        onProgress: (n) => {
+          job.phase = "生成中";
+          job.processed = n;
+        },
+      });
+      const stamp14 = timeStamp14();
+      const csv = { name: rakutenCsvFileName(stamp14), body: result.body! };
+      const extra: Array<{ name: string; body: Buffer }> = [];
+      if (result.errors.length) extra.push({ name: "errors.txt", body: buildRakutenReport(result.errors) });
+      if (result.warnings.length) extra.push({ name: "warnings.txt", body: buildRakutenReport(result.warnings) });
+      if (extra.length === 0) {
+        job.body = csv.body;
+        job.contentType = "text/csv; charset=Shift_JIS";
+        job.filename = csv.name;
+      } else {
+        job.body = await zipFiles([csv, ...extra]);
+        job.contentType = "application/zip";
+        job.filename = `${rakutenSpec.key}_${stamp14}.zip`;
+      }
+      job.status = "DONE";
+      job.phase = "完了";
+      return;
+    }
     const mallSet = f.fileType && channelCode !== "futureshop" ? findMallSetSpec(channelCode, f.fileType) : undefined;
     if (mallSet) {
       const stamp14 = timeStamp14();
@@ -1015,6 +1075,11 @@ exportsRouter.get("/file-types", async (req, res, next) => {
   try {
     const channelId = z.coerce.number().int().parse(req.query.channelId);
     const channel = await prisma.channel.findUniqueOrThrow({ where: { id: channelId } });
+    if (channel.code === "rakuten") {
+      return res.json({
+        fileTypes: RAKUTEN_FILE_TYPES.map((t) => ({ key: t.key, label: t.label, book: t.book, isSet: false })),
+      });
+    }
     res.json({ fileTypes: mallFileTypeOptions(channel.code) });
   } catch (e) {
     next(e);
