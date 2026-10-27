@@ -70,12 +70,13 @@ const SECTIONS: Section[] = [
             <tr><td>独自コメント16(CF)</td><td>futureshop(シーリングファンのタブ)→「独自コメント16のみ更新」</td></tr>
             <tr><td>CSV_yahoo(CF)</td><td>Yahoo!ショッピング(シーリングファンのタブ)→「CF CSV_yahoo」</td></tr>
             <tr><td>Yahoo 在庫変更/生産終了・販売価格変更(PL)</td><td>Yahoo!ショッピング(ペンダントライトのタブ)→「PL 在庫変更/生産終了」「PL 価格データ」</td></tr>
-            <tr><td>CSV_楽天(CF)・楽天(PL)</td><td>楽天 →「CSV_楽天」「楽天(PL)」</td></tr>
+            <tr><td>楽天スプレッドシートの［CSV出力実行］(新規商品登録 / 価格更新)</td><td>楽天(タブで PL / CF)→「新規登録・更新(normal-item)」「価格更新(normal-item)」</td></tr>
             <tr><td>CSV_Amazon(CF)</td><td>Amazon(シーリングファンのタブ)→「CSV_Amazon」</td></tr>
             <tr><td>FS_Spec(PL)・Original＆Spec(CF)</td><td>CSV出力の下の「HTML出力」(タブでペンダントライト/シーリングファンを選ぶ)</td></tr>
             <tr><td>FS_CopyIMG_FmodelName(PL・CF)</td><td><Link to="/images">画像</Link> →「futureshop 商品画像(PL / CF)」</td></tr>
             <tr><td>FS_ListIMG_syukusen_FmodelName(CF)</td><td>画像 →「商品一覧用 縮小画像(CF)」</td></tr>
             <tr><td>Yahoo画像リネーム(PL)・ChangeImageFileName_yahoo(CF)</td><td>画像 →「Yahoo 商品画像(PL / CF)」</td></tr>
+            <tr><td>楽天スプレッドシートの［画像リネーム］</td><td>画像 →「楽天 商品画像(PL / CF)」</td></tr>
           </tbody>
         </table>
         <p className="muted">
@@ -152,8 +153,8 @@ const SECTIONS: Section[] = [
             </tr>
             <tr>
               <td>楽天</td>
-              <td>楽天(削除+生産終了用更新+商品更新) / 各単体</td>
-              <td>CSV_楽天(バリエーション在庫+単品) / 各単体</td>
+              <td>新規登録・更新(normal-item) / 価格更新(normal-item)</td>
+              <td>新規登録・更新(normal-item) / 価格更新(normal-item)</td>
             </tr>
             <tr>
               <td>Amazon</td>
@@ -166,6 +167,20 @@ const SECTIONS: Section[] = [
           <li>複数ファイルをまとめる種別(Excel のボタン1回分)は ZIP でダウンロードされます。</li>
           <li>行数が多いファイルは、現行マクロと同じ件数で <code>_1, _2…</code> に分割され ZIP になります(futureshop 商品CSVは700行など)。</li>
           <li>文字コードは現行どおり(主に Shift_JIS)です。ファイル名も現行マクロに合わせています。</li>
+        </ul>
+        <h4>楽天</h4>
+        <ul>
+          <li>
+            楽天の CSV は、これまでの楽天スプレッドシート(シートに台帳の行を貼り付けて［CSV出力実行］)と同じ内容を、システムに取り込んだ台帳から作ります。
+            出力する商品は ★マークや検索で絞り込みます(スプレッドシートに貼り付けていた行の代わり)。
+          </li>
+          <li>商品情報を更新するときも「新規登録・更新」を使います(スプレッドシートと同じ)。アップロードする前に楽天側でバックアップを取ってください。</li>
+          <li>新しい SKU はダウンロードしたときに楽天SKU番号として記録されます(プレビューでは記録しません)。</li>
+          <li>
+            スプレッドシートで作れなかった商品(メーカーの楽天ロゴが未設定など)は CSV に入らず、ZIP 内の <code>errors.txt</code> に一覧が出ます。
+            画像が楽天用に未登録の場合などの注意は <code>warnings.txt</code> に出ます。
+          </li>
+          <li>楽天用の画像の名前変更(連番)は「画像」画面の「楽天 商品画像」で行います。CSV より先に行ってください(CSV の画像欄に使われます)。</li>
         </ul>
         <h4>HTML出力(スペックページ等)</h4>
         <p>
@@ -200,7 +215,11 @@ const SECTIONS: Section[] = [
         </ul>
         <h4>画像ファイルの出力</h4>
         <ol>
-          <li>「出力する画像」を選びます(futureshop 商品画像 / 商品一覧用 縮小画像 / Yahoo 商品画像。PL・CF 別)。</li>
+          <li>「出力する画像」を選びます(futureshop 商品画像 / 商品一覧用 縮小画像 / Yahoo 商品画像 / 楽天 商品画像。PL・CF 別)。</li>
+          <li>
+            楽天 商品画像は、楽天用の連番(<code>cf_img_rakuten/lib1/0000001.jpg</code> 等)がまだ付いていない画像だけを出力し、ダウンロードした時点で連番を記録します。
+            ZIP の中のフォルダ(<code>cf_img_rakuten</code> / <code>pl_img_rakuten</code>)を、これまでどおり楽天の FTP にアップロードしてください。
+          </li>
           <li>Excel で範囲を選ぶ代わりに、商品コードの入力・★マーク・メーカー・更新日で対象を絞ります(空欄なら登録フラグ○の全商品)。</li>
           <li>「対象を確認」で件数と注意(元画像が無いなど)を確認し、「ZIP をダウンロード」します。</li>
         </ol>
@@ -315,9 +334,12 @@ const SECTIONS: Section[] = [
           futureshop に未登録の新商品を登録する場合は、ダウンロードしたCSVの該当行を <code>n</code> に変更してください(判定方法を確認中)。
         </li>
         <li>
-          <b>楽天・Yahoo(ペンダントライト)・ネクストエンジン:</b> 現在の運用はスプレッドシートで出力しています。
-          このシステムの出力は Excel マクロの処理をもとにしたもので、スプレッドシートの出力とはまだ照合していません。
-          当面はこれまでどおりスプレッドシートで出力してください。
+          <b>楽天:</b> 楽天スプレッドシートの処理を移植しました。シーリングファンの新規登録は、スプレッドシートが実際に出力した CSV と同じ内容になることを確認済みです。
+          ペンダントライトと価格更新は実際の出力との照合がまだのため、最初はアップロード前に内容を確認してください。
+        </li>
+        <li>
+          <b>Yahoo(ペンダントライト)・ネクストエンジン:</b> 現在の運用はスプレッドシートで出力しています。
+          このシステムの出力はスプレッドシートの出力とまだ照合していないため、当面はこれまでどおりスプレッドシートで出力してください。
         </li>
         <li><b>Amazon:</b> 現在の運用では Excel・スプレッドシートのどちらからも出力していません。使い方を確認中です。</li>
         <li><b>在庫:</b> 各モールの在庫数は現行マクロと同じ固定値(99 など)で出力しています。</li>
