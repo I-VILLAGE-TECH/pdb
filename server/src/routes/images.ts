@@ -186,6 +186,8 @@ imagesRouter.post("/output/download", async (req, res, next) => {
     ].join("\r\n");
     await zip.add("_result.txt", Buffer.from("\uFEFF" + report + "\r\n", "utf8"));
     await zip.finish();
+    // 楽天の画像リネーム: 出力した画像を画像管理に登録する(ZIP を書き終えてから)
+    await plan.commit?.();
     res.end();
   } catch (e) {
     if (started) {

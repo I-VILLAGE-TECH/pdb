@@ -256,6 +256,7 @@ model Product {
   fanAttrs      ProductFanAttrs?
   variations    ProductVariation[]
   images        ProductImage[]
+  ledgerRows    LedgerRow[]
   setComponents SetComponent[]        @relation("SetParent")
   usedInSets    SetComponent[]        @relation("Component")
   categories    ProductCategoryLink[]
@@ -804,4 +805,54 @@ model SyncJobItem {
 
   @@index([jobId])
   @@map("sync_job_items")
+}
+
+// ============================================================
+// 台帳(Excel)の行の生セル。スプレッドシート・GAS で台帳の行をそのまま読む出力(楽天 等)の移植用
+// ============================================================
+
+model LedgerRow {
+  id        Int     @id @default(autoincrement())
+  productId Int     @map("product_id")
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  sheet     String // 取込元のシート名
+  rowNo     Int     @map("row_no") // シート上の行番号(1始まり)
+  skuCode   String? @map("sku_code") // PL: fazoo管理型番(ユニーク) / CF: ID商品管理
+  listed    Boolean // 登録フラグ(A列が○)
+  // 行の生セルの JSON 文字列(列はシートのまま。空欄は ""、日付は {"$date": ISO 文字列})。
+  // 計算式の結果の浮動小数点(7.6000000000000005 等)を桁まで保つため、Json 型ではなく文字列で持つ
+  // (Prisma の Json 型は読み戻すときに最後の桁がずれることがある。GAS はこの値をそのまま説明文に出す)
+  cells     String
+
+  @@index([productId])
+  @@map("ledger_rows")
+}
+
+// 楽天SKU番号(楽天スプレッドシートの同名シート)。楽天 CSV の新規登録で新しい SKU が出ると追記する
+model RakutenSku {
+  id        Int      @id @default(autoincrement()) // シートの行順
+  // シートの1行(商品管理番号・SKU管理番号・システム連携用SKU番号・バリエーション項目キー1・バリエーション項目選択肢1)。
+  // GAS はセルの型のまま厳密比較するため、値は型を保って持つ
+  values    Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("rakuten_skus")
+}
+
+// 楽天の画像管理(CF)/(PL)。元画像のファイル名と楽天用の連番名(cf_img_rakuten/lib1/0000001.jpg 等)の対応。
+// 画像リネームで新しい画像が出ると追記する。楽天 CSV の画像パス・説明文の画像 URL に使う
+model RakutenImage {
+  id          Int      @id @default(autoincrement())
+  book        String // CF / PL
+  sortNo      Int      @map("sort_no") // シートの行順
+  no          Int? // ID 列(GAS が振った番号)
+  fileName    String   @map("file_name")
+  folder1     String?
+  folder2     String?
+  renamedName String?  @map("renamed_name")
+  path        String? // ファイルパス(フォルダ1/フォルダ2/リネーム後)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([book, sortNo])
+  @@map("rakuten_images")
 }

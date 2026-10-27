@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma.js";
-import { extractWorkbook, type ProductJson } from "./excelExtract.js";
+import { extractWorkbook, type LedgerRowJson, type ProductJson } from "./excelExtract.js";
 import { readFileBuffer, removeFile, saveFile } from "./storage.js";
 
 export type ImportMode = "diff" | "replace";
@@ -245,8 +245,9 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
         variations = [],
         setComponents = [],
         channelPrices = [],
+        ledgerRows = [],
         ...productFields
-      } = p as ProductJson;
+      } = p as ProductJson & { ledgerRows?: LedgerRowJson[] };
 
       const data = clean({
         ...productFields,
@@ -302,6 +303,14 @@ async function runImport(job: ImportJob, buffer: Buffer): Promise<void> {
           where: { skuCode: v.skuCode as string },
           create: { ...vData, productId: product.id },
           update: { ...vData, productId: product.id },
+        });
+      }
+
+      // 台帳の行の生セル(楽天 GAS の移植等が使う)は取込のたびに作り直す
+      await prisma.ledgerRow.deleteMany({ where: { productId: product.id } });
+      if (ledgerRows.length > 0) {
+        await prisma.ledgerRow.createMany({
+          data: ledgerRows.map((r) => ({ ...r, cells: JSON.stringify(r.cells), productId: product.id })),
         });
       }
 

@@ -81,11 +81,18 @@ function sheetRows(wb: XLSX.WorkBook, name: string): Row[] {
   return XLSX.utils.sheet_to_json<Row>(ws, { header: 1, raw: true, defval: null });
 }
 
-// セルの生値(数値/文字列の型を保持。日付はISO文字列)。楽天CSVなど VBA の Cell.Value をそのまま文字列化する出力用
+// セルの生値(数値/文字列の型を保持。日付はISO文字列)。Amazon など VBA の Cell.Value をそのまま文字列化する出力用
 function cellRaw(v: Cell): string | number | boolean | null {
   if (v == null) return null;
   if (v instanceof Date) return v.toISOString();
   return v;
+}
+
+// 台帳の行の生セル(ledger_rows に保存)。スプレッドシート・GAS は getValues の値をそのまま使うため、
+// 空欄は ""、数値・文字列は型のまま、日付は JSON で持てるよう {"$date": ISO} にする(読む側で Date に戻す)
+export type LedgerRowJson = { sheet: string; rowNo: number; skuCode: string | null; listed: boolean; cells: unknown[] };
+function ledgerCells(row: Row): unknown[] {
+  return Array.from(row, (v) => (v == null ? "" : v instanceof Date ? { $date: v.toISOString() } : v));
 }
 
 // ---------- ペンダントライト（.xlsm） ----------
@@ -137,8 +144,6 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
   // データ行の直後にID(メーカー記号+通番)だけ数式で埋まったテンプレート行が続く箇所がある。
   // 現行VBAの関連商品(独自コメント(8))はこの行も範囲判定に含むため、直前の商品にそのID値を記録して再現する
   const templateFollows = new Map<string, string>();
-  // 楽天CSV(★rakuten.bas)用: メインシートの行ごとの生セル(A/D/E/S/AW/AC)とシート上の行位置。商品(親)単位にまとめる
-  const plRakutenRows = new Map<string, Array<Record<string, unknown>>>();
   const sheets = [PL_SHEET, ...(wb.SheetNames.includes(PL_OTHER_SHEET) ? [PL_OTHER_SHEET] : [])];
   // シートごとのA1セル(Variationモード/Optionモード)。FS商品CSVの在庫管理・現在在庫数が切り替わる
   const sheetModes = new Map<string, string | null>();
@@ -161,19 +166,6 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
       }
       lastParentCode = parentCode;
       rowPos.set(row, ri);
-      if (sheetName === PL_SHEET) {
-        const list = plRakutenRows.get(parentCode) ?? [];
-        list.push({
-          row: ri + 1, // シート上の行番号(楽天CSVはシート順に出す)
-          a: cellRaw(row[0]), // データ投入フラグ
-          d: cellRaw(row[3]), // 入荷待ち
-          e: cellRaw(row[4]), // 販売終了
-          s: cellRaw(row[18]), // fazoo管理型番(ユニーク)=楽天の商品管理番号
-          aw: cellRaw(row[48]), // 販売価格合計
-          ac: cellRaw(row[28]), // 定価(税込)
-        });
-        plRakutenRows.set(parentCode, list);
-      }
       const makerCode = s(row[7]);
       if (makerCode && !makers.has(makerCode)) {
         makers.set(makerCode, {
@@ -284,6 +276,16 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
     }
 
     products.push({
+      // 商品グループの各行(シート順)。楽天 GAS は1行=楽天の1商品として読む
+      ledgerRows: [...allRows]
+        .sort((a, b) => (rowPos.get(a) ?? 0) - (rowPos.get(b) ?? 0))
+        .map((r) => ({
+          sheet: g.sheet,
+          rowNo: (rowPos.get(r) ?? 0) + 1,
+          skuCode: s(r[18]),
+          listed: s(r[0]) === "○",
+          cells: ledgerCells(r),
+        })),
       sheetRow: products.length + 1,
       productCode: parentCode,
       category,
@@ -329,7 +331,6 @@ export function extractPl(wb: XLSX.WorkBook): ExtractResult {
         manualKeywords: s(p[130]),
         attachableCount: numInt(p[157]),
         plTemplateRelKey: templateFollows.get(parentCode),
-        rakutenRows: plRakutenRows.get(parentCode) ?? [], // 楽天CSV用の行ごとの生セル(メインシートのみ)
         itemType: s(p[6]), // 商品種別(PL/CL/CF/LR/AC/OP)。FS商品名の「製○○」の語尾に使う
         sheet: g.sheet === PL_OTHER_SHEET ? "other" : undefined, // その他別管理一覧FSの商品
         sheetMode: sheetModes.get(g.sheet), // シートのA1セル(Variationモード/Optionモード)
@@ -444,22 +445,6 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
   const makers = new Map<string, MakerJson>();
   const products: ProductJson[] = [];
 
-  // 楽天_バリエーションマスタ(rakuten.bas の rakuten_variation_csv が A列を商品コードで Find して参照)。
-  // Find は大文字小文字を区別しない完全一致のため、キーは大文字化。行順(シート順)を保持
-  const rakutenMaster = new Map<string, Array<Record<string, unknown>>>();
-  if (wb.SheetNames.includes("楽天_バリエーションマスタ")) {
-    const mrows = sheetRows(wb, "楽天_バリエーションマスタ");
-    for (let ri = 1; ri < mrows.length; ri++) {
-      const r = mrows[ri] ?? [];
-      if (r[0] == null || r[0] === "") continue;
-      const key = String(cellRaw(r[0])).toUpperCase();
-      const list = rakutenMaster.get(key) ?? [];
-      // A:商品コード B:商品名 F:横軸選択肢 H:縦軸選択肢 J:在庫数 U:楽天 倉庫指定
-      list.push({ a: cellRaw(r[0]), b: cellRaw(r[1]), f: cellRaw(r[5]), h: cellRaw(r[7]), j: cellRaw(r[9]), u: cellRaw(r[20]) });
-      rakutenMaster.set(key, list);
-    }
-  }
-
   // Amazon ASIN一覧(Amazon作成用.bas の DataUproadCheck / DataUproadCheckSD が A列=出品者SKU の完全一致で参照。
   // 同じSKUが複数あれば最後の行。重複は CheckAsinOverlapIV/SD で停止)。I:商品IDタイプ N:商品ID P:フルフィルメント・チャンネル
   type AsinEntry = { id: string | number | boolean | null; type: string | number | boolean | null; ch: string | number | boolean | null; dup?: true };
@@ -559,6 +544,7 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
     const amazonPrice = numInt(row[47]);
 
     products.push({
+      ledgerRows: [{ sheet: CF_SHEET, rowNo: ri + 1, skuCode: code, listed: s(row[0]) === "○", cells: ledgerCells(row) }],
       sheetRow: products.length + 1,
       productCode: code,
       category: "CEILING_FAN",
@@ -658,18 +644,6 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         fsMainImageCells: [rawS(row[112]), rawS(row[113])],
         // 製品画像HTML・SPEC HTML(original_JPG.bas / spec.bas)用の生セル。キーは実シートの列番号(最新ブックの Common.bas)
         specCells: specCells(row, CF_SPEC_COLS),
-        // 楽天CSV(rakuten.bas)用の生セル。列は英字直指定(A/C/P/AD/AE/AF/AO/AU。いずれも挿入列(110)より左)
-        rakutenCells: {
-          a: cellRaw(row[0]), // 商品登録フラグ
-          c: cellRaw(row[2]), // 入荷予定(生産ステータス)
-          p: cellRaw(row[15]), // ID商品管理
-          ad: cellRaw(row[29]), // 型番_バリエーション1
-          ae: cellRaw(row[30]), // 型番_バリエーション2
-          af: cellRaw(row[31]), // 型番_バリエーション3
-          ao: cellRaw(row[40]), // 定価(税込)=表示価格("O"=オープン価格)
-          au: cellRaw(row[46]), // 販売価格1(税込)
-        },
-        rakutenVariationMaster: rakutenMaster.get(String(cellRaw(row[15]) ?? "").toUpperCase()) ?? [], // 楽天_バリエーションマスタの一致行
         // Amazon出品ファイル(Amazon作成用.bas)用の生セル。型(数値/文字列)を保持(VBAの空セル=0扱い・文字列比較の再現用)
         amazonCells: {
           registerFlag: cellRaw(row[0]), // 商品登録フラグ
@@ -746,7 +720,6 @@ const IMPORT_SHEETS = [
   PL_SHEET,
   PL_OTHER_SHEET,
   CF_SHEET,
-  "楽天_バリエーションマスタ",
   "Amazon(IV-ASIN)",
   "Amazon(SD-ASIN)",
 ];

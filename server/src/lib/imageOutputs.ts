@@ -4,9 +4,12 @@
 // - list_cf : CF FS_ListIMG_syukusen_FmodelName              L1(無ければM1)を200×200に縮小→{ID}_list(現行は外部ツール「縮専」)
 // - yahoo_cf: CF ChangeImageFileName_yahoo(Yahoo作成用.bas)  {id}.jpg・{id}_1〜(小文字)
 // - yahoo_pl: PL ChangeImageFileName_yahooPL(YahooIMG.bas。2026-09-29版ブックで追加)  SKU単位で {sku}.jpg・{sku}_1〜(小文字)
+// - rakuten_cf / rakuten_pl: 楽天スプレッドシートの［画像リネーム］(lib/rakuten/rakutenImages.ts)。画像管理に無い画像だけを連番で出力し、
+//   ダウンロード時に画像管理へ登録する
 // 対象は現行と同じく「商品登録フラグ○」の商品。現行の「選択範囲」の代わりに画面の絞り込み(商品コード・メーカー等)を使う
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma.js";
+import { planRakutenImages } from "./rakuten/rakutenImages.js";
 
 export const IMAGE_OUTPUT_KINDS = {
   fs_cf: { label: "futureshop 商品画像(CF)", book: "CF" },
@@ -14,6 +17,8 @@ export const IMAGE_OUTPUT_KINDS = {
   yahoo_cf: { label: "Yahoo 商品画像(CF)", book: "CF" },
   fs_pl: { label: "futureshop 商品画像(PL)", book: "PL" },
   yahoo_pl: { label: "Yahoo 商品画像(PL)", book: "PL" },
+  rakuten_cf: { label: "楽天 商品画像(CF)", book: "CF" },
+  rakuten_pl: { label: "楽天 商品画像(PL)", book: "PL" },
 } as const;
 export type ImageOutputKind = keyof typeof IMAGE_OUTPUT_KINDS;
 
@@ -28,7 +33,13 @@ export type ImageOutputFilter = {
 
 export type PlannedEntry = { path: string; source: string; resize?: { width: number; height: number } };
 export type ImageOutputIssue = { productCode: string; fileName: string; reason: string };
-export type ImageOutputPlan = { products: number; entries: PlannedEntry[]; issues: ImageOutputIssue[] };
+export type ImageOutputPlan = {
+  products: number;
+  entries: PlannedEntry[];
+  issues: ImageOutputIssue[];
+  // ダウンロードが終わったときに行う登録(楽天の画像管理への追記)。プレビューでは呼ばない
+  commit?: () => Promise<void>;
+};
 
 const productInclude = {
   images: true,
@@ -54,8 +65,8 @@ function listed(p: Product): boolean {
   return p.variations.some((v) => v.listed);
 }
 
-async function loadProducts(kind: ImageOutputKind, f: ImageOutputFilter): Promise<Product[]> {
-  const where: Prisma.ProductWhereInput = {
+export function imageFilterWhere(f: ImageOutputFilter): Prisma.ProductWhereInput {
+  return {
     deletedAt: null,
     ...(f.productCodes?.length && { productCode: { in: f.productCodes } }),
     ...(f.makerId && { makerId: f.makerId }),
@@ -75,6 +86,10 @@ async function loadProducts(kind: ImageOutputKind, f: ImageOutputFilter): Promis
       ],
     }),
   };
+}
+
+async function loadProducts(kind: ImageOutputKind, f: ImageOutputFilter): Promise<Product[]> {
+  const where = imageFilterWhere(f);
   const products = await prisma.product.findMany({ where, include: productInclude, orderBy: { sheetRow: "asc" } });
   const book = IMAGE_OUTPUT_KINDS[kind].book;
   return products.filter((p) => isPlBookCode(p.productCode) === (book === "PL") && listed(p));
@@ -86,6 +101,9 @@ export async function planImageOutput(
   f: ImageOutputFilter,
   storedNames: Set<string>
 ): Promise<ImageOutputPlan> {
+  if (kind === "rakuten_cf" || kind === "rakuten_pl") {
+    return planRakutenImages(kind === "rakuten_cf" ? "CF" : "PL", imageFilterWhere(f), storedNames);
+  }
   const products = await loadProducts(kind, f);
   const entries: PlannedEntry[] = [];
   const issues: ImageOutputIssue[] = [];
