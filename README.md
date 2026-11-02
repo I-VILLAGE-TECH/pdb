@@ -204,8 +204,9 @@ Excel 取込は Cloud Run ジョブで実行し、CSV 出力はリクエスト�
 | GET | `/api/images/summary` / `/api/images/missing` | 元画像の登録状況・未アップロード一覧（`?format=csv`） |
 | POST | `/api/images/check` / `/api/images/upload` | 元画像の照合（名前・サイズ）とアップロード（ADMIN。1回20ファイルまで）。ファイル名単位で `image_files` に保存先を記録し、幅・高さを計測 |
 | GET | `/api/images/file/:name` | 元画像の表示 |
-| POST | `/api/images/output/preview` / `/api/images/output/download` | 画像ファイルの出力（FS_CopyIMG・ListIMG_syukusen・Yahoo画像リネーム相当）。ZIP は少しずつ書き出す（`lib/zipStream.ts`） |
+| POST | `/api/images/output/preview` / `/api/images/output/download` | 画像ファイルの出力（FS_CopyIMG・ListIMG_syukusen・Yahoo画像リネーム、楽天・Yahoo(PL)スプレッドシートの画像リネーム相当）。ZIP は少しずつ書き出す（`lib/zipStream.ts`） |
 | POST | `/api/exports/download`(楽天: `fileType=rakuten_new_pl` 等) | 楽天 CSV(normal-item)。現行の楽天スプレッドシート(GAS)の移植(`lib/rakuten/`)で、台帳の行(`ledger_rows`)から作る。新規 SKU はダウンロード時に `rakuten_skus` に保存。出力できなかった行・警告は ZIP の errors.txt・warnings.txt。並行比較の手順は `tools/gas-rakuten/README.md` |
+| POST | `/api/exports/download`(Yahoo PL: `fileType=yahoo_new_pl` 等) | Yahoo PL の CSV(data_add_pl / data_price_pl / quantity_pl / data_del_pl)。現行の Yahoo(PL)スプレッドシート(GAS)の移植(`lib/yahoo/`)で、楽天と同じく台帳の行(`ledger_rows`)から作る。出力しなかった行・警告は ZIP の errors.txt・warnings.txt。画像(img / lib)は画像出力の `yahoo_pl`・`yahoo_pl_lib`。並行比較の手順は `tools/gas-yahoo/README.md` |
 | POST | `/api/html-exports/download` | HTML出力（PL SPEC / CF 製品画像・SPEC）を ZIP で。商品を200件ずつ生成して書き出す |
 | POST/DELETE | `/api/products/:id/images(/:imageId)` | 商品画像のアップロード・削除。保存先はローカル`uploads/`（Docker volume）またはGCS（`GCS_BUCKET`設定時）、配信は認証つき `GET /uploads/<key>` |
 | GET/POST/PUT | `/api/makers`, `/api/channels`, `/api/categories` | 各マスタ |

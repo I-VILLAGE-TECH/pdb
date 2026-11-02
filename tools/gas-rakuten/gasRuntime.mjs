@@ -1,6 +1,6 @@
-// 楽天スプレッドシートの GAS(Apps Script)を Node で動かすための最小限の代用品。
+// 楽天・Yahoo(PL)スプレッドシートの GAS(Apps Script)を Node で動かすための最小限の代用品。
 // GAS のコードは変更せずに読み込み、SpreadsheetApp・HtmlService・Utilities・DriveApp を差し替える。
-// 用途: 現行 GAS の出力(正解)を手元のデータで再現し、product-db の楽天出力と並行比較する
+// 用途: 現行 GAS の出力(正解)を手元のデータで再現し、product-db の出力と並行比較する(tools/gas-yahoo からも使う)
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -93,14 +93,23 @@ function formatDate(date, _tz, fmt) {
  * @param gasDir GAS(.js / .html)を置いたフォルダ
  * @param sheets シート名 → FakeSheet
  * @param activeSheetName アクティブシート名
+ * @param exportNames GAS のグローバルのうち、呼び出し側で使うもの
  */
-export function createGasContext(gasDir, sheets, activeSheetName, fixedNow = new Date("2026-10-27T10:00:00+09:00")) {
+export function createGasContext(
+  gasDir,
+  sheets,
+  activeSheetName,
+  fixedNow = new Date("2026-10-27T10:00:00+09:00"),
+  exportNames = ["CTX", "CONFIG", "convertRakutenCsv", "outputCSV"]
+) {
   const outputs = []; // DriveApp に作られたファイル { folderId, name, text }
   const alerts = [];
   const spreadsheet = {
     getSheetByName: (n) => sheets[n] ?? null,
     getActiveSheet: () => sheets[activeSheetName],
     getId: () => "fake-spreadsheet",
+    toast: () => {},
+    insertSheet: (n) => (sheets[n] = new FakeSheet(n, [])),
   };
   const sandbox = {
     console: { log() {}, info() {}, warn() {}, error: (...a) => alerts.push(a.join(" ")) },
@@ -153,6 +162,6 @@ export function createGasContext(gasDir, sheets, activeSheetName, fixedNow = new
   // GAS は全ファイルが同じグローバルを共有する。const/let もファイルをまたいで見えるよう1本につなげて評価する
   const files = fs.readdirSync(gasDir).filter((f) => f.endsWith(".js")).sort();
   const src = files.map((f) => `// ---- ${f}\n${fs.readFileSync(path.join(gasDir, f), "utf8")}`).join("\n");
-  vm.runInContext(`${src}\n;globalThis.__gas = { CTX, CONFIG, convertRakutenCsv, outputCSV };`, sandbox, { filename: "gas.js" });
+  vm.runInContext(`${src}\n;globalThis.__gas = { ${exportNames.join(", ")} };`, sandbox, { filename: "gas.js" });
   return { sandbox, gas: sandbox.__gas, outputs, alerts };
 }

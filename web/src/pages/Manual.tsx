@@ -69,13 +69,14 @@ const SECTIONS: Section[] = [
             <tr><td>FS_ccGoodsImage画像ALT(CF)</td><td>futureshop(シーリングファンのタブ)→「商品画像ALT」</td></tr>
             <tr><td>独自コメント16(CF)</td><td>futureshop(シーリングファンのタブ)→「独自コメント16のみ更新」</td></tr>
             <tr><td>CSV_yahoo(CF)</td><td>Yahoo!ショッピング(シーリングファンのタブ)→「CF CSV_yahoo」</td></tr>
-            <tr><td>Yahoo 在庫変更/生産終了・販売価格変更(PL)</td><td>Yahoo!ショッピング(ペンダントライトのタブ)→「PL 在庫変更/生産終了」「PL 価格データ」</td></tr>
+            <tr><td>Yahoo(PL)スプレッドシートの［CSV出力実行］(新規商品登録 / 価格更新)</td><td>Yahoo!ショッピング(ペンダントライトのタブ)→「PL 新規登録・更新(data_add_pl)」「PL 価格更新(data_price_pl)」</td></tr>
             <tr><td>楽天スプレッドシートの［CSV出力実行］(新規商品登録 / 価格更新)</td><td>楽天(タブで PL / CF)→「新規登録・更新(normal-item)」「価格更新(normal-item)」</td></tr>
             <tr><td>CSV_Amazon(CF)</td><td>Amazon(シーリングファンのタブ)→「CSV_Amazon」</td></tr>
             <tr><td>FS_Spec(PL)・Original＆Spec(CF)</td><td>CSV出力の下の「HTML出力」(タブでペンダントライト/シーリングファンを選ぶ)</td></tr>
             <tr><td>FS_CopyIMG_FmodelName(PL・CF)</td><td><Link to="/images">画像</Link> →「futureshop 商品画像(PL / CF)」</td></tr>
             <tr><td>FS_ListIMG_syukusen_FmodelName(CF)</td><td>画像 →「商品一覧用 縮小画像(CF)」</td></tr>
-            <tr><td>Yahoo画像リネーム(PL)・ChangeImageFileName_yahoo(CF)</td><td>画像 →「Yahoo 商品画像(PL / CF)」</td></tr>
+            <tr><td>ChangeImageFileName_yahoo(CF)</td><td>画像 →「Yahoo 商品画像(CF)」</td></tr>
+            <tr><td>Yahoo(PL)スプレッドシートの［画像リネーム］</td><td>画像 →「Yahoo 商品画像(PL・img)」「Yahoo 追加画像(PL・lib)」</td></tr>
             <tr><td>楽天スプレッドシートの［画像リネーム］</td><td>画像 →「楽天 商品画像(PL / CF)」</td></tr>
           </tbody>
         </table>
@@ -148,7 +149,7 @@ const SECTIONS: Section[] = [
             </tr>
             <tr>
               <td>Yahoo!ショッピング</td>
-              <td>在庫変更/生産終了(在庫+削除) / 在庫 / 削除 / 価格</td>
+              <td>新規登録・更新(data_add_pl) / 価格更新(data_price_pl) / 在庫変更(quantity_pl) / 生産終了(data_del_pl)</td>
               <td>CSV_yahoo(商品+在庫+削除) / 商品 / 在庫 / 削除</td>
             </tr>
             <tr>
@@ -217,6 +218,10 @@ const SECTIONS: Section[] = [
         <ol>
           <li>「出力する画像」を選びます(futureshop 商品画像 / 商品一覧用 縮小画像 / Yahoo 商品画像 / 楽天 商品画像。PL・CF 別)。</li>
           <li>
+            Yahoo(PL)は、商品画像(<code>img_…zip</code>。<code>{"{型番}.jpg"}</code>・<code>{"{型番}_1.jpg"}</code>〜)と追加画像(<code>lib_…zip</code>。元の名前のまま。商品説明文の画像)を別々に出力します。
+            ZIP はそのままストアクリエイターにアップロードできるよう、フォルダや <code>_result.txt</code> を入れていません。元画像が無いものは「対象を確認」で確認してください。
+          </li>
+          <li>
             楽天 商品画像は、楽天用の連番(<code>cf_img_rakuten/lib1/0000001.jpg</code> 等)がまだ付いていない画像だけを出力し、ダウンロードした時点で連番を記録します。
             ZIP の中のフォルダ(<code>cf_img_rakuten</code> / <code>pl_img_rakuten</code>)を、これまでどおり楽天の FTP にアップロードしてください。
           </li>
@@ -225,7 +230,7 @@ const SECTIONS: Section[] = [
         </ol>
         <ul>
           <li>ZIP 内のフォルダ・ファイル名は現行マクロの出力先と同じです(FutureshopIMG / feed / upload_image / list / YahooIMG)。</li>
-          <li>元画像が無かったものなどは、ZIP 内の <code>_result.txt</code> に一覧があります。</li>
+          <li>元画像が無かったものなどは、ZIP 内の <code>_result.txt</code> に一覧があります(Yahoo(PL)を除く)。</li>
           <li>商品一覧用の縮小画像(200×200)は、現行の「縮専」の代わりにシステムで縮小します。</li>
           <li>全商品を出力すると数分かかります。新商品だけなど、絞って出力するのがおすすめです。</li>
         </ul>
@@ -338,8 +343,11 @@ const SECTIONS: Section[] = [
           ペンダントライトと価格更新は実際の出力との照合がまだのため、最初はアップロード前に内容を確認してください。
         </li>
         <li>
-          <b>Yahoo(ペンダントライト)・ネクストエンジン:</b> 現在の運用はスプレッドシートで出力しています。
-          このシステムの出力はスプレッドシートの出力とまだ照合していないため、当面はこれまでどおりスプレッドシートで出力してください。
+          <b>Yahoo(ペンダントライト):</b> Yahoo(PL)スプレッドシートの処理を移植しました。スプレッドシートが実際に出力した CSV との照合がまだのため、
+          最初はアップロード前に内容を確認してください。「在庫変更」「生産終了」はスプレッドシートの操作説明に無い操作です(使い方を確認中)。
+        </li>
+        <li>
+          <b>ネクストエンジン:</b> 現在の運用はスプレッドシートで出力しています。このシステムではまだ出力できません。
         </li>
         <li><b>Amazon:</b> 現在の運用では Excel・スプレッドシートのどちらからも出力していません。使い方を確認中です。</li>
         <li><b>在庫:</b> 各モールの在庫数は現行マクロと同じ固定値(99 など)で出力しています。</li>

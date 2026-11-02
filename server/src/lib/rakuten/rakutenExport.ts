@@ -91,7 +91,7 @@ export async function generateRakutenCsv(
 // GAS(setDataFromString(…, "Shift-JIS"))は JIS の対応表で変換するため、「〜」(U+301C)と「−」(U+2212)は
 // 0x8160・0x817C になる。iconv-lite の Shift_JIS では「?」になるので、同じ符号になる全角文字に置き換えてから変換する
 // (台帳の PL に実際に出てくる文字。本物の PL 出力での確認はまだ。Shift_JIS に無い文字(「蒅」等)は GAS と同じく「?」)
-function encodeSjisLikeGas(text: string): Buffer {
+export function encodeSjisLikeGas(text: string): Buffer {
   return iconv.encode(text.replace(/\u301C/g, "\uFF5E").replace(/\u2212/g, "\uFF0D"), "Shift_JIS");
 }
 
