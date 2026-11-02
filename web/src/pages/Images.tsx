@@ -311,7 +311,7 @@ function OutputPanel() {
     <div className="panel">
       <h3 style={{ marginTop: 0 }}>画像ファイルの出力</h3>
       <p className="muted" style={{ marginTop: 0 }}>
-        Excel の画像系ボタン（FS_CopyIMG_FmodelName・FS_ListIMG_syukusen・Yahoo画像リネーム）と同じ名前・構成の画像を ZIP で出力します。
+        Excel の画像系ボタン（FS_CopyIMG_FmodelName・FS_ListIMG_syukusen・Yahoo画像リネーム）、楽天・Yahoo(PL)スプレッドシートの［画像リネーム］と同じ名前・構成の画像を ZIP で出力します。
         対象は商品登録フラグ○の商品です。Excel で範囲を選ぶ代わりに、商品コード・マーク・メーカー・更新日で絞り込みます。
       </p>
       {error && <div className="error">{error}</div>}

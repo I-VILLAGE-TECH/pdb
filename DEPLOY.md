@@ -74,6 +74,7 @@ cd product-db
   未登録・変更分だけが送られ、幅・高さも計測して `image_files` に入る(下の画像サイズのスクリプトは、元画像が未アップロードの画像サイズを補う用途)
 - **取込項目を追加したリリースの後**: 両ブックを Excel取込し直す(例: 2026-10-26 の HTML 出力・画像出力で `extra.specRows`・`specCells`・`plRowImages` を追加)
   (2026-10-27 の楽天(GAS 移植)では台帳の行をそのまま `ledger_rows` に保存するようにした。リリース後に両ブックを取り込み直さないと楽天の CSV が0件になる)
+  (2026-10-28 の Yahoo PL(GAS 移植)も同じ `ledger_rows` を使う。マイグレーション・管理データは無い。楽天のリリース後に取り込み直していれば追加の作業は不要)
 - **楽天の管理データ(初回のみ)**: 楽天スプレッドシート(「（楽天）商品情報更新データ作成」)を「ファイル → ダウンロード → Microsoft Excel」で保存し、
   楽天SKU番号・画像管理(CF)/(PL) を本番DBに取り込む(下の画像サイズと同じく Cloud SQL Auth Proxy 経由)。
   `DATABASE_URL="$DATABASE_URL" npx tsx src/scripts/import-rakuten-master.ts "<（楽天）商品情報更新データ作成.xlsx>"`。

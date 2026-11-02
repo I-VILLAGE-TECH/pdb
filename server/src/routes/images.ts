@@ -144,7 +144,7 @@ imagesRouter.post("/output/preview", async (req, res, next) => {
   }
 });
 
-// 画像ファイルを ZIP でダウンロード(フォルダ構成は現行マクロの出力先に合わせる)。不足一覧は ZIP 内の _result.txt
+// 画像ファイルを ZIP でダウンロード(フォルダ構成は現行マクロの出力先に合わせる)。不足一覧は ZIP 内の _result.txt(Yahoo PL を除く)
 imagesRouter.post("/output/download", async (req, res, next) => {
   let started = false;
   try {
@@ -156,7 +156,10 @@ imagesRouter.post("/output/download", async (req, res, next) => {
     }
     const stamp = new Date().toLocaleString("sv-SE", { timeZone: "Asia/Tokyo" }).replace(/\D/g, "").slice(0, 12);
     res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`画像_${kind}_${stamp}.zip`)}`);
+    // Yahoo PL はスプレッドシートと同じ img_/lib_{yyyyMMddHHmm}.zip
+    const def = IMAGE_OUTPUT_KINDS[kind] as { zipPrefix?: string; uploadAsIs?: boolean };
+    const zipName = def.zipPrefix ? `${def.zipPrefix}${stamp}.zip` : `画像_${kind}_${stamp}.zip`;
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(zipName)}`);
     started = true;
     const zip = new ZipStreamWriter(res);
     const written = new Set<string>();
@@ -184,7 +187,8 @@ imagesRouter.post("/output/download", async (req, res, next) => {
       "",
       ...plan.issues.map((i) => `${i.productCode}\t${i.fileName}\t${i.reason}`),
     ].join("\r\n");
-    await zip.add("_result.txt", Buffer.from("\uFEFF" + report + "\r\n", "utf8"));
+    // そのままアップロードする ZIP(Yahoo)には入れない。不足は出力前の確認画面で見る
+    if (!def.uploadAsIs) await zip.add("_result.txt", Buffer.from("\uFEFF" + report + "\r\n", "utf8"));
     await zip.finish();
     // 楽天の画像リネーム: 出力した画像を画像管理に登録する(ZIP を書き終えてから)
     await plan.commit?.();

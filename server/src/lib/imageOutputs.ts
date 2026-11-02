@@ -3,20 +3,23 @@
 // - fs_pl   : PL ★FS_CopyIMG_FmodelName                    メイン画像M01→{fazoo型番}-01
 // - list_cf : CF FS_ListIMG_syukusen_FmodelName              L1(無ければM1)を200×200に縮小→{ID}_list(現行は外部ツール「縮専」)
 // - yahoo_cf: CF ChangeImageFileName_yahoo(Yahoo作成用.bas)  {id}.jpg・{id}_1〜(小文字)
-// - yahoo_pl: PL ChangeImageFileName_yahooPL(YahooIMG.bas。2026-09-29版ブックで追加)  SKU単位で {sku}.jpg・{sku}_1〜(小文字)
+// - yahoo_pl / yahoo_pl_lib: Yahoo(PL)スプレッドシートの［画像リネーム］(lib/yahoo/yahooPlImages.ts)。商品画像(img)と追加画像(lib)を
+//   別々の ZIP にする。ZIP はそのままストアクリエイターにアップロードするため、フォルダも結果ファイル(_result.txt)も入れない
 // - rakuten_cf / rakuten_pl: 楽天スプレッドシートの［画像リネーム］(lib/rakuten/rakutenImages.ts)。画像管理に無い画像だけを連番で出力し、
 //   ダウンロード時に画像管理へ登録する
 // 対象は現行と同じく「商品登録フラグ○」の商品。現行の「選択範囲」の代わりに画面の絞り込み(商品コード・メーカー等)を使う
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma.js";
 import { planRakutenImages } from "./rakuten/rakutenImages.js";
+import { planYahooPlImages } from "./yahoo/yahooPlImages.js";
 
 export const IMAGE_OUTPUT_KINDS = {
   fs_cf: { label: "futureshop 商品画像(CF)", book: "CF" },
   list_cf: { label: "商品一覧用 縮小画像(CF)", book: "CF" },
   yahoo_cf: { label: "Yahoo 商品画像(CF)", book: "CF" },
   fs_pl: { label: "futureshop 商品画像(PL)", book: "PL" },
-  yahoo_pl: { label: "Yahoo 商品画像(PL)", book: "PL" },
+  yahoo_pl: { label: "Yahoo 商品画像(PL・img)", book: "PL", zipPrefix: "img_", uploadAsIs: true },
+  yahoo_pl_lib: { label: "Yahoo 追加画像(PL・lib)", book: "PL", zipPrefix: "lib_", uploadAsIs: true },
   rakuten_cf: { label: "楽天 商品画像(CF)", book: "CF" },
   rakuten_pl: { label: "楽天 商品画像(PL)", book: "PL" },
 } as const;
@@ -103,6 +106,9 @@ export async function planImageOutput(
 ): Promise<ImageOutputPlan> {
   if (kind === "rakuten_cf" || kind === "rakuten_pl") {
     return planRakutenImages(kind === "rakuten_cf" ? "CF" : "PL", imageFilterWhere(f), storedNames);
+  }
+  if (kind === "yahoo_pl" || kind === "yahoo_pl_lib") {
+    return planYahooPlImages(kind === "yahoo_pl" ? "img" : "lib", imageFilterWhere(f), storedNames);
   }
   const products = await loadProducts(kind, f);
   const entries: PlannedEntry[] = [];
@@ -204,38 +210,6 @@ export async function planImageOutput(
         else if (has(v)) entries.push({ path, source: v });
         else missing(p, v);
       });
-    } else if (kind === "yahoo_pl") {
-      // SKU(fazoo管理型番ユニーク)単位。販売終了○の行は除く。元画像が無いものは番号を進めずに飛ばす(現行どおり)
-      // 画像は行ごとの M01〜F06(extra.plRowImages)。取込前のデータで行の画像が無い場合は商品の画像を使う
-      const rowImages = ((p.extra ?? {}) as { plRowImages?: Record<string, string[]> }).plRowImages ?? {};
-      const productCols = [
-        img(p, "MAIN", 1),
-        img(p, "MAIN", 2),
-        ...Array.from({ length: 15 }, (_, i) => img(p, "IMAGE", i + 1)),
-        ...Array.from({ length: 3 }, (_, i) => img(p, "SIZE", i + 1)),
-        ...Array.from({ length: 6 }, (_, i) => img(p, "FUNCTION", i + 1)),
-      ];
-      const vars = [...p.variations].sort((a, b) => a.variationNo - b.variationNo).filter((v) => v.listed && !v.eosFlag);
-      for (const v of vars) {
-        const lc = v.skuCode.toLowerCase();
-        const cols = rowImages[v.skuCode] ?? productCols;
-        let n = 1;
-        cols.forEach((name, idx) => {
-          if (!name) return;
-          if (!has(name)) {
-            missing(p, name);
-            return;
-          }
-          if (idx === 0) {
-            entries.push({ path: `YahooIMG/${lc}.jpg`, source: name });
-          } else if (n <= 21) {
-            entries.push({ path: `YahooIMG/${lc}_${n}.jpg`, source: name });
-            n++;
-          } else {
-            missing(p, name, "画像登録上限を超えるためスキップ(現行どおり)");
-          }
-        });
-      }
     }
   }
 
