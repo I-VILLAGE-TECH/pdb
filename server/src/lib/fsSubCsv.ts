@@ -171,17 +171,12 @@ export function plFsCategories(p: ProductFull): string[] {
       );
     }
     if (w >= 80 && w <= 100) cats.push("4人掛けテーブル用/1灯80W-100Wタイプ");
-    if (w >= 40 && w <= 79) cats.push("4人掛けテーブル用/2灯40W-60Wタイプ");
-    if (w >= 1 && w <= 40) cats.push("4人掛けテーブル用/3灯40Wタイプ");
-    if (w >= 80 && w <= 100) cats.push("6人掛けテーブル用/2灯80W-100Wタイプ");
-    else if (w >= 41 && w <= 79) cats.push("6人掛けテーブル用/3灯60Wタイプ");
-    else if (w >= 1 && w <= 40) cats.push("6人掛けテーブル用/4灯40Wタイプ");
-    else {
-      throw Object.assign(
-        new Error(`${p.productCode}: テーブルサイズ別用(W相当)の値が正しくありません: ${tableRaw}`),
-        { status: 400 }
-      );
-    }
+    if (w >= 40 && w < 80) cats.push("4人掛けテーブル用/2灯40W-60Wタイプ");
+    if (w < 41) cats.push("4人掛けテーブル用/3灯40Wタイプ");
+    // 以上・未満で振り分ける(業務確認 No.9。整数の結果は現行と同じ。現行は 79.5 などの小数で停止する)
+    if (w >= 80) cats.push("6人掛けテーブル用/2灯80W-100Wタイプ");
+    else if (w >= 41) cats.push("6人掛けテーブル用/3灯60Wタイプ");
+    else cats.push("6人掛けテーブル用/4灯40Wタイプ");
   }
   return cats;
 }

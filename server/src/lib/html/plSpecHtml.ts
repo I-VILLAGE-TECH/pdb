@@ -122,7 +122,7 @@ export function plSpecHtml(p: PlSpecSource): HtmlFile | null {
     if (other) model = model.split(" 「1. 」").join("");
 
     const lp = cell(r, C.listPrice);
-    if (vbStr(lp) === "O") prices.push("オープン価格");
+    if (vbStr(lp).toUpperCase() === "O") prices.push("オープン価格");
     else if (vbPositive(lp)) prices.push(`${vbStr(lp)}円`);
     else throw new Error(`定価が記入されていない可能性があります(${pn})`);
 

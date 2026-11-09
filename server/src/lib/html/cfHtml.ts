@@ -194,7 +194,7 @@ export function cfSpecHtml(p: ProductFull): HtmlFile {
   const tr = (label: string, col: number) => `    <tr><td class="td02">${label}</td><td class="td03">${v(col)}</td></tr>`;
 
   let price: string;
-  if (v(41) === "O") price = '    <td class="td01" colspan="2">オープン価格</td>';
+  if (v(41).toUpperCase() === "O") price = '    <td class="td01" colspan="2">オープン価格</td>';
   else if (vbPositive(c["41"])) price = `    <td class="td01" colspan="2">${vbFormatYen(c["40"])}</td>`;
   else throw new Error("定価が記入されていない可能性があります");
 

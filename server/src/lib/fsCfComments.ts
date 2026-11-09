@@ -4,7 +4,7 @@
 // 改行: VBAは vbNewLine(CRLF)でHTMLを組み立てるため生成部分は "\r\n"。セル値(紹介文・フリーHTML等)は取込値のまま埋め込む。
 // 画像の縦横px(CheckImageInfo)は image_files テーブルの値を setCfImageSizes() で受け取る(scripts/seed-image-files.ts で投入)。
 import type { Prisma } from "@prisma/client";
-import { cfMaker, cfModelConcat, CF_LIFTER_CODES } from "./fsCfGoods.js";
+import { cfMaker, cfModelConcat, cfWeightForJudge, CF_LIFTER_CODES } from "./fsCfGoods.js";
 
 type ProductFull = Prisma.ProductGetPayload<{
   include: {
@@ -63,7 +63,7 @@ function heightNum(p: ProductFull): number {
   return exNum(p, "heightRaw") ?? cellNum(p.heightMm);
 }
 function weightNum(p: ProductFull): number {
-  return exNum(p, "weightRaw") ?? cellNum(p.weightKg == null ? null : Number(p.weightKg));
+  return cfWeightForJudge(exNum(p, "weightRaw") ?? cellNum(p.weightKg == null ? null : Number(p.weightKg)));
 }
 
 // セルの数値をVBAの文字列化(有効15桁)で出す。生数値(extra)があれば優先
@@ -496,8 +496,8 @@ export function cfComment14(p: ProductFull, _modelConcat?: string): string {
     `  <dd><img class="lazyload" src="${LAZY_SRC}" data-src="https://www.fazoo.biz/cf_img/products_detail/${file}" alt="${alt}" width="${w}" height="${h}"></dd>\r\n`;
   const boltImg = (file: string, h: number) =>
     `  <dd class="inst_bolt"><img class="lazyload" src="${LAZY_SRC}" data-src="https://www.fazoo.biz/cf_img/products_detail/${file}" alt="ネジ" width="24" height="${h}"></dd>\r\n`;
-  // VBAは「= ""」判定のため空白のみのセルも入力ありになる(生セル subIndividualCell を優先)
-  const subIndividualSet = "subIndividualCell" in cfExtra(p) ? exs(p, "subIndividualCell") !== "" : !!subIndividual;
+  // 空白のみのセルは入力なし(業務確認 No.6。VBAの「= ""」判定は再現しない。生セル subIndividualCell を優先)
+  const subIndividualSet = "subIndividualCell" in cfExtra(p) ? exs(p, "subIndividualCell").trim() !== "" : !!subIndividual?.trim();
   if (!subIndividualSet && !cfIsSingleOption(p)) {
     if (t1 === "○") {
       body +=
@@ -1200,11 +1200,10 @@ export function cfComment13(p: ProductFull): string {
         s += `<div class="size-set">\r\n<div class="size-set_inner01">\r\n`;
         s += `<p>${lazyImg(`${ICON}${file}`, `alt="サイズ寸法" width="320" height="190"`)}</p>\r\n`;
         s += `<ul>\r\n`;
-        // VBAは幅・高さ・羽根の高さのいずれかが空だとエラー停止→続行で 0 のまま出力される
-        const ok = p.widthMm != null && p.heightMm != null && f?.heightToBladeMm != null;
-        s += `  <li class="fansize fan-width">${ok ? vbRound(widthNum(p)) : 0}</li>\r\n`;
-        s += `  <li class="fansize fan-height">${ok ? vbRound(heightNum(p)) : 0}</li>\r\n`;
-        s += `  <li class="fansize fan-towing">${ok ? f?.heightToBladeMm : 0}</li>\r\n`;
+        // 空欄の値だけ 0 で出す(業務確認 No.5。VBAはいずれかが空だとエラー停止→続行で全部 0 になる)
+        s += `  <li class="fansize fan-width">${p.widthMm != null ? vbRound(widthNum(p)) : 0}</li>\r\n`;
+        s += `  <li class="fansize fan-height">${p.heightMm != null ? vbRound(heightNum(p)) : 0}</li>\r\n`;
+        s += `  <li class="fansize fan-towing">${f?.heightToBladeMm ?? 0}</li>\r\n`;
         s += `</ul>\r\n</div><!--//size-set_inner01-->\r\n</div><!--//size-set-->\r\n\r\n`;
       } else if (sz) {
         s += `<ul class="img_box01">\r\n`;
