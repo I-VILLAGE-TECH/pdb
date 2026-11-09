@@ -117,12 +117,12 @@ function functionImages(p: ProductFull) {
   return p.images.filter((i) => i.imageType === "FUNCTION").sort((a, b) => a.sortNo - b.sortNo);
 }
 
-// (3)〜(9)のバナー。closeNo が open と違う枠がある(現行VBAのコピペずれを踏襲)
+// (3)〜(9)のバナー
 const plusBanner = (dir: "↓↓" | "↑↑", n: number) =>
   `<!-- ++++++++++++++++++++++++++\n  ${dir}独自コメント（${n}）${dir}\n++++++++++++++++++++++++++++ -->`;
-function wrapPlus(n: number, body: string, closeNo = n): string {
-  if (!body) return `${plusBanner("↓↓", n)}\n\n${plusBanner("↑↑", closeNo)}\n`;
-  return `${plusBanner("↓↓", n)}\n\n${body}\n${plusBanner("↑↑", closeNo)}\n`;
+function wrapPlus(n: number, body: string): string {
+  if (!body) return `${plusBanner("↓↓", n)}\n\n${plusBanner("↑↑", n)}\n`;
+  return `${plusBanner("↓↓", n)}\n\n${body}\n${plusBanner("↑↑", n)}\n`;
 }
 
 // バリエーションの電球種別を分解: "LED調光・非調色位相制御" → kind=LED, mode=調光・非調色, method=位相制御
@@ -167,8 +167,7 @@ export function plComment02(p: ProductFull): string {
 export function plComment03(p: ProductFull): string {
   // その他別管理一覧は取付方法ではなく商品ジャンル(その他管理用カテゴリ1)を表示
   const inst = isOtherSheet(p) ? opCategoryOf(p) : (p.lightingAttrs?.installationType ?? "");
-  // 閉じバナーが（4）なのは現行踏襲
-  return wrapPlus(3, `<ul class="tag_label"> \n<li>${inst}</li>\n</ul>`, 4).replace("</ul>\n<!--", "</ul>\n<!--");
+  return wrapPlus(3, `<ul class="tag_label"> \n<li>${inst}</li>\n</ul>`);
 }
 
 // ============== 独自コメント(4): %OFF表示 ==============

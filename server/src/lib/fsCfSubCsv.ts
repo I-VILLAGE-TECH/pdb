@@ -9,7 +9,7 @@
 //   ※列値は商品CSVの列関数(exports.ts の FUNCS)を使うため、行生成は exports.ts 側で行う。ここでは対象判定と列名のみ
 // 対象行は商品登録フラグ○(variations.listed)。生産終了の扱いは種別ごとに現行どおり
 import type { Prisma } from "@prisma/client";
-import { cfModelConcat, cfMaker } from "./fsCfGoods.js";
+import { cfModelConcat, cfMaker, cfWeightForJudge } from "./fsCfGoods.js";
 import { fsSubCsvHeader, type FsSubFileType } from "./fsSubCsv.js";
 
 type ProductFull = Prisma.ProductGetPayload<{
@@ -232,7 +232,7 @@ export function cfFsCategories(p: ProductFull): string[] {
 
   if (width < SMALL_TYPE_WIDTH) cats.push("小型・コンパクトタイプ");
   if (rawNum(p, "heightRaw", p.heightMm) <= SLIM_TYPE_HEIGHT && light) cats.push("薄型・スリムタイプ");
-  if (rawNum(p, "weightRaw", p.weightKg) <= LIGHT_WEIGHT_TYPE2) cats.push("軽量・軽いタイプ");
+  if (cfWeightForJudge(rawNum(p, "weightRaw", p.weightKg)) <= LIGHT_WEIGHT_TYPE2) cats.push("軽量・軽いタイプ");
   // 風量: 数値セル(VarType=vbDouble)なら70以上、文字列"large1"も大風量。セル型は extra.windVolumeCell で判定
   const windCell = "windVolumeCell" in ex(p) ? ex(p).windVolumeCell : f?.windVolume != null ? num(f.windVolume) : exS(p, "windVolumeRaw");
   if (typeof windCell === "number") {

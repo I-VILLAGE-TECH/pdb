@@ -616,7 +616,7 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         nameId: s(row[17]), // 商品名ID(FS商品名の【】内。空なら商品コード)
         janRaw: rawS(row[37]), // JANコードセル生値(FSは先頭13文字を全角化。先頭スペースも保持)
         productNameRaw: rawS(row[19]), // 商品名セル生値(FS商品名に使用)
-        // 幅・高さ・重量の生数値(小数誤差込み。7.000000000000001kg は軽量(7以下)にならない等、FS商品名の判定に効く)
+        // 幅・高さ・重量の生数値(小数誤差込み。FS商品名などの判定に使う。futureshop の重量の判定は cfWeightForJudge で誤差を除く)
         widthRaw: numFloat(row[32]),
         heightRaw: numFloat(row[33]),
         weightRaw: numFloat(row[36]),
@@ -626,7 +626,7 @@ export function extractCf(wb: XLSX.WorkBook): ExtractResult {
         ductRailRaw: s(row[110]), // ダクトレール取り付け(取付6相当)
         exampleUrlRaw: s(row[143]), // 事例写真リンクURL
         subIntro1Raw: rawS(row[86]), // サブ紹介文1(末尾改行込み)
-        subIndividualCell: typeof row[85] === "string" && row[85] !== "" ? row[85] : null, // サブ紹介文_個別(空白のみも「入力あり」扱い)
+        subIndividualCell: typeof row[85] === "string" && row[85] !== "" ? row[85] : null, // サブ紹介文_個別(空白のみのセルも保持。Yahoo・Amazon は「入力あり」扱い、futureshop は入力なし)
         windSpeedCell: typeof row[57] === "number" || typeof row[57] === "string" ? row[57] : null, // 風速
         windVolumeCell: typeof row[58] === "number" || typeof row[58] === "string" ? row[58] : null, // 風量
         pipeLengthCell: typeof row[61] === "number" || typeof row[61] === "string" ? row[61] : null, // 延長パイプ

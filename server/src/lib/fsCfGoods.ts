@@ -22,6 +22,8 @@ const AIR_VOL_E1 = 70; // 大風量 風量70以上
 const SLIM_TYPE_HEIGHT = 350; // 薄型 高さ350以下
 const SMALL_TYPE_WIDTH = 900; // 小型 幅900未満
 const LIGHT_WEIGHT_TYPE2 = 7; // 軽量 7kg以下
+// 重量の生数値の小数誤差(7.000000000000001 等)を Excel の見た目(有効15桁)にそろえる(業務確認 No.4。現行マクロの誤差判定は再現しない)
+export const cfWeightForJudge = (kg: number): number => Number(kg.toPrecision(15));
 // 電動昇降機(カテゴリ・商品名が特別扱い)
 export const CF_LIFTER_CODES = new Set(["OXO001", "OXO002", "OXO003", "OXO004", "OXO007", "PXO001", "PXO002"]);
 
@@ -126,11 +128,11 @@ function cfFeatureWords(p: ProductFull): string {
     else s += `${color} `;
     if (f?.lightCount != null) s += `${f.lightCount}灯 `;
   }
-  // セルの生数値で判定(小数誤差も現行どおり)。空セルは0扱い(VBAの比較)なので未入力は薄型/小型/軽量に該当する
+  // セルの生数値で判定(幅・高さの小数誤差は現行どおり。重量は cfWeightForJudge)。空セルは0扱い(VBAの比較)なので未入力は薄型/小型/軽量に該当する
   const raw = (key: string, fallback: unknown) => Number(extra(p)[key] ?? fallback ?? 0);
   if (raw("heightRaw", p.heightMm) <= SLIM_TYPE_HEIGHT && light) s += "薄型 ";
   if (raw("widthRaw", p.widthMm) < SMALL_TYPE_WIDTH) s += "小型 ";
-  if (raw("weightRaw", p.weightKg) <= LIGHT_WEIGHT_TYPE2) s += "軽量 ";
+  if (cfWeightForJudge(raw("weightRaw", p.weightKg)) <= LIGHT_WEIGHT_TYPE2) s += "軽量 ";
   return s;
 }
 
