@@ -12,3 +12,5 @@ tmp/
 uploads/
 # terraform plan -out の出力(秘密情報を含むことがある)
 infra/tfplan
+# 操作マニュアルの撮影用に一時的に入れる Playwright
+tools/manual-screenshots/package*.json

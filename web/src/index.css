@@ -1099,3 +1099,33 @@ th.drag-over {
     width: auto;
   }
 }
+
+/* 操作マニュアルの画面キャプチャと番号 */
+.manual-shot {
+  margin: 8px 0 10px;
+}
+.manual-shot img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border, #d8dee6);
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+.manual-shot.small img {
+  max-width: 320px;
+}
+.manual-num {
+  display: inline-block;
+  min-width: 20px;
+  height: 20px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #e5484d;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  vertical-align: 1px;
+}
