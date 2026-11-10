@@ -56,6 +56,7 @@ product-db/
 
 利用者向けの操作説明はアプリ内のサイドメニュー「ヘルプ」（`/manual`、`web/src/pages/Manual.tsx`）。
 画面や運用を変えたときは、このページも合わせて更新する。
+画面の画像は `web/public/manual/` にあり、`tools/manual-screenshots/` のスクリプトで撮り直せる（手順は同フォルダの README）。
 
 ## ローカル環境構築・実行方法
 
